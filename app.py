@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ATLAS R6-SCRIPT - COMPLETE FIXED VERSION
+ATLAS R6-SCRIPT - ADMIN PANEL WITH TABS AND EXTEND
 """
 
 import os
@@ -72,24 +72,48 @@ def create_default_keys():
             "expiry": (datetime.now() + timedelta(days=7)).isoformat(),
             "used": False,
             "hwid": None,
-            "created": datetime.now().isoformat()
+            "created": datetime.now().isoformat(),
+            "duration": "7days"
         },
         "30D1-8C4F-2E7B-9A3D-5F6C-1B9E": {
             "expiry": (datetime.now() + timedelta(days=30)).isoformat(),
             "used": False,
             "hwid": None,
-            "created": datetime.now().isoformat()
+            "created": datetime.now().isoformat(),
+            "duration": "30days"
         },
         "365D-1A2B-3C4D-5E6F-7A8B-9C0D": {
             "expiry": (datetime.now() + timedelta(days=365)).isoformat(),
             "used": False,
             "hwid": None,
-            "created": datetime.now().isoformat()
+            "created": datetime.now().isoformat(),
+            "duration": "365days"
         }
     }
     save_keys()
 
 load_keys()
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def get_keys_by_duration(days):
+    """Get all keys with specific duration"""
+    duration_str = f"{days}days"
+    return {k: v for k, v in KEYS.items() if v.get('duration') == duration_str}
+
+def extend_key(key, days):
+    """Extend a key by specified days"""
+    if key in KEYS:
+        current_expiry = datetime.fromisoformat(KEYS[key]['expiry'])
+        new_expiry = current_expiry + timedelta(days=days)
+        KEYS[key]['expiry'] = new_expiry.isoformat()
+        KEYS[key]['extended'] = KEYS[key].get('extended', 0) + days
+        KEYS[key]['extended_date'] = datetime.now().isoformat()
+        save_keys()
+        return True
+    return False
 
 # ============================================================================
 # LOGIN DECORATOR
@@ -192,26 +216,67 @@ def logout():
     return redirect(url_for('login'))
 
 # ============================================================================
-# ADMIN PANEL - FIXED VERSION
+# ADMIN API - EXTEND KEY
+# ============================================================================
+
+@app.route('/admin/api/extend', methods=['POST'])
+@login_required
+def admin_extend_key():
+    """Extend a key by specified days"""
+    data = request.json
+    key = data.get('key', '').strip().upper()
+    days = int(data.get('days', 30))
+    
+    if key not in KEYS:
+        return jsonify({'success': False, 'error': 'Key not found'}), 404
+    
+    current_expiry = datetime.fromisoformat(KEYS[key]['expiry'])
+    new_expiry = current_expiry + timedelta(days=days)
+    
+    KEYS[key]['expiry'] = new_expiry.isoformat()
+    KEYS[key]['extended'] = KEYS[key].get('extended', 0) + days
+    KEYS[key]['extended_date'] = datetime.now().isoformat()
+    
+    save_keys()
+    
+    return jsonify({
+        'success': True,
+        'message': f'Key extended by {days} days',
+        'new_expiry': new_expiry.isoformat()
+    })
+
+# ============================================================================
+# ADMIN API - GET KEYS BY DURATION
+# ============================================================================
+
+@app.route('/admin/api/keys/<int:days>', methods=['GET'])
+@login_required
+def admin_get_keys_by_duration(days):
+    """Get keys with specific duration"""
+    filtered = get_keys_by_duration(days)
+    return jsonify(filtered)
+
+# ============================================================================
+# ADMIN PANEL - WITH TABS
 # ============================================================================
 
 @app.route('/admin')
 @login_required
 def admin():
-    """Admin panel - using direct HTML, no external templates needed"""
-    return '''
+    """Admin panel with tabs for different key durations"""
+    return f'''
     <!DOCTYPE html>
     <html>
     <head>
         <title>ATLAS Admin</title>
         <style>
-            * { margin:0; padding:0; box-sizing:border-box; font-family:monospace; }
-            body { 
+            * {{ margin:0; padding:0; box-sizing:border-box; font-family:monospace; }}
+            body {{ 
                 background: linear-gradient(135deg, #0a0f1e 0%, #001520 100%);
                 padding:20px;
-            }
-            .container { max-width:1200px; margin:0 auto; }
-            .header { 
+            }}
+            .container {{ max-width:1400px; margin:0 auto; }}
+            .header {{ 
                 background: rgba(0,255,255,0.1);
                 border: 2px solid #00ffff;
                 border-radius: 10px;
@@ -220,44 +285,79 @@ def admin():
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
-            }
-            h1 { color:#00ffff; }
-            .stats { 
+            }}
+            h1 {{ color:#00ffff; }}
+            .stats {{ 
                 display: grid;
                 grid-template-columns: repeat(4,1fr);
                 gap: 15px;
                 margin-bottom: 20px;
-            }
-            .stat-card { 
+            }}
+            .stat-card {{ 
                 background: rgba(0,255,255,0.05);
                 border: 1px solid #00ffff;
                 border-radius: 8px;
                 padding: 20px;
                 text-align: center;
-            }
-            .stat-value { 
+            }}
+            .stat-value {{ 
                 color:#00ffff; 
                 font-size:32px; 
                 font-weight:bold;
-            }
-            .panel { 
+            }}
+            .panel {{ 
                 background: rgba(0,0,0,0.5);
                 border: 1px solid #00ffff;
                 border-radius: 8px;
                 padding: 20px;
                 margin-bottom: 20px;
-            }
-            h2 { color:#00ffff; margin-bottom: 15px; }
-            input, select { 
-                width: 100%;
+            }}
+            h2 {{ color:#00ffff; margin-bottom: 15px; }}
+            .tab-container {{
+                display: flex;
+                gap: 5px;
+                margin-bottom: 20px;
+                border-bottom: 1px solid #00ffff40;
+            }}
+            .tab-btn {{
+                flex: 1;
+                padding: 12px;
+                background: transparent;
+                border: none;
+                color: #a0b0c0;
+                cursor: pointer;
+                font-size: 16px;
+                font-weight: bold;
+                text-transform: uppercase;
+                transition: all 0.3s;
+            }}
+            .tab-btn:hover {{
+                color: #00ffff;
+            }}
+            .tab-btn.active {{
+                color: #00ffff;
+                border-bottom: 2px solid #00ffff;
+            }}
+            .tab-content {{
+                display: none;
+            }}
+            .tab-content.active {{
+                display: block;
+            }}
+            .generate-section {{
+                display: grid;
+                grid-template-columns: 1fr 1fr auto;
+                gap: 10px;
+                margin-bottom: 20px;
+            }}
+            input, select {{ 
                 padding: 10px;
-                margin: 10px 0;
                 background: #1a2a30;
                 border: 1px solid #00ffff;
                 color: #00ffff;
                 border-radius: 4px;
-            }
-            button { 
+            }}
+            button {{ 
                 background: #00ffff;
                 color: #0a0f1e;
                 border: none;
@@ -265,45 +365,94 @@ def admin():
                 border-radius: 4px;
                 cursor: pointer;
                 font-weight: bold;
-                margin: 5px;
-            }
-            button:hover {
+            }}
+            button:hover {{
                 background: #ffffff;
                 box-shadow: 0 0 20px #00ffff;
-            }
-            .key-list { 
+            }}
+            button.danger {{ background: #ff6464; }}
+            button.warning {{ background: #ffaa00; }}
+            .key-list {{ 
                 max-height:400px; 
                 overflow-y:auto; 
                 border:1px solid #00ffff40;
                 border-radius: 4px;
-            }
-            .key-item { 
+            }}
+            .key-item {{ 
                 display:flex; 
                 justify-content:space-between; 
                 align-items:center;
                 padding:15px; 
                 border-bottom:1px solid #00ffff20; 
                 color:#fff;
-            }
-            .key-item:hover {
+            }}
+            .key-item:hover {{
                 background: rgba(0,255,255,0.1);
-            }
-            .logout-btn { 
+            }}
+            .key-info {{
+                flex: 1;
+            }}
+            .key-code {{
+                color: #00ffff;
+                font-size: 16px;
+                font-family: monospace;
+            }}
+            .key-meta {{
+                margin-top: 5px;
+                font-size: 12px;
+                color: #a0b0c0;
+            }}
+            .key-actions {{
+                display: flex;
+                gap: 5px;
+            }}
+            .status-used {{ color: #ffaa00; }}
+            .status-available {{ color: #00ff00; }}
+            .status-expired {{ color: #ff6464; }}
+            .logout-btn {{ 
                 background: #ff6464;
                 color: #0a0f1e;
                 text-decoration: none;
                 padding: 10px 20px;
                 border-radius: 4px;
                 font-weight: bold;
-            }
-            .generated {
+            }}
+            .generated {{
                 margin-top: 10px;
                 padding: 10px;
                 background: rgba(0,255,0,0.1);
                 border: 1px solid #00ff00;
                 border-radius: 4px;
                 color: #00ff00;
-            }
+            }}
+            .extend-modal {{
+                display: none;
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background: rgba(0,0,0,0.8);
+                justify-content: center;
+                align-items: center;
+                z-index: 1000;
+            }}
+            .modal-content {{
+                background: #1a2a30;
+                border: 2px solid #00ffff;
+                border-radius: 8px;
+                padding: 30px;
+                width: 400px;
+            }}
+            .modal-content h3 {{
+                color: #00ffff;
+                margin-bottom: 20px;
+            }}
+            .modal-buttons {{
+                display: flex;
+                gap: 10px;
+                margin-top: 20px;
+            }}
         </style>
     </head>
     <body>
@@ -322,68 +471,154 @@ def admin():
             
             <div class="panel">
                 <h2>⚡ Generate Keys</h2>
-                <input type="number" id="count" value="5" min="1" max="100">
-                <select id="days">
-                    <option value="7">7 Days</option>
-                    <option value="30">30 Days</option>
-                    <option value="365">1 Year</option>
-                </select>
-                <button onclick="generateKeys()">Generate Keys</button>
+                <div class="generate-section">
+                    <input type="number" id="genCount" value="5" min="1" max="100">
+                    <select id="genDuration">
+                        <option value="7">7 Days</option>
+                        <option value="30">30 Days</option>
+                        <option value="365">1 Year</option>
+                    </select>
+                    <button onclick="generateKeys()">Generate</button>
+                </div>
                 <div id="generated" class="generated" style="display:none;"></div>
             </div>
             
-            <div class="panel">
-                <h2>📋 All Keys</h2>
-                <div class="key-list" id="keyList"></div>
+            <div class="tab-container">
+                <button class="tab-btn active" onclick="switchTab(7)">📅 7 DAYS</button>
+                <button class="tab-btn" onclick="switchTab(30)">📅 30 DAYS</button>
+                <button class="tab-btn" onclick="switchTab(365)">📅 365 DAYS</button>
+                <button class="tab-btn" onclick="switchTab('all')">📋 ALL KEYS</button>
+            </div>
+            
+            <div class="tab-content active" id="tab-7">
+                <div class="key-list" id="keys-7"></div>
+            </div>
+            <div class="tab-content" id="tab-30">
+                <div class="key-list" id="keys-30"></div>
+            </div>
+            <div class="tab-content" id="tab-365">
+                <div class="key-list" id="keys-365"></div>
+            </div>
+            <div class="tab-content" id="tab-all">
+                <div class="key-list" id="keys-all"></div>
+            </div>
+        </div>
+        
+        <!-- Extend Modal -->
+        <div class="extend-modal" id="extendModal">
+            <div class="modal-content">
+                <h3>⏰ Extend Key</h3>
+                <p id="extendKeyCode" style="color:#00ffff; font-family:monospace; margin-bottom:15px;"></p>
+                <select id="extendDays">
+                    <option value="7">+7 Days</option>
+                    <option value="30">+30 Days</option>
+                    <option value="90">+90 Days</option>
+                    <option value="365">+1 Year</option>
+                </select>
+                <div class="modal-buttons">
+                    <button onclick="confirmExtend()">Extend</button>
+                    <button class="danger" onclick="closeModal()">Cancel</button>
+                </div>
             </div>
         </div>
         
         <script>
-            async function loadStats() {
+            let currentExtendKey = null;
+            
+            async function loadStats() {{
                 const res = await fetch('/admin/api/stats');
                 const data = await res.json();
                 document.getElementById('total').textContent = data.total;
                 document.getElementById('used').textContent = data.used;
                 document.getElementById('available').textContent = data.available;
                 document.getElementById('expired').textContent = data.expired;
-            }
+            }}
             
-            async function loadKeys() {
+            async function loadKeys() {{
+                // Load all keys
                 const res = await fetch('/admin/api/keys');
                 const keys = await res.json();
-                const list = document.getElementById('keyList');
-                list.innerHTML = '';
+                displayKeys('all', keys);
                 
-                Object.entries(keys).forEach(([key, data]) => {
+                // Load keys by duration
+                const durations = [7, 30, 365];
+                for (const days of durations) {{
+                    const res = await fetch(`/admin/api/keys/${{days}}`);
+                    const keys = await res.json();
+                    displayKeys(days, keys);
+                }}
+            }}
+            
+            function displayKeys(tabId, keys) {{
+                const container = document.getElementById(`keys-${{tabId}}`);
+                if (!container) return;
+                
+                container.innerHTML = '';
+                
+                Object.entries(keys).sort((a,b) => new Date(b[1].created) - new Date(a[1].created)).forEach(([key, data]) => {{
+                    const now = new Date();
+                    const expiry = new Date(data.expiry);
+                    const isExpired = expiry < now;
+                    
+                    let statusClass = 'status-available';
+                    let statusText = 'AVAILABLE';
+                    
+                    if (data.used) {{
+                        statusClass = 'status-used';
+                        statusText = 'USED';
+                    }} else if (isExpired) {{
+                        statusClass = 'status-expired';
+                        statusText = 'EXPIRED';
+                    }}
+                    
                     const div = document.createElement('div');
                     div.className = 'key-item';
                     
-                    const status = data.used ? 'USED' : 'AVAILABLE';
-                    const statusColor = data.used ? '#ffaa00' : '#00ff00';
-                    
                     div.innerHTML = `
-                        <div>
-                            <div style="color:#00ffff;">${key}</div>
-                            <div>
-                                <span style="color:${statusColor};">${status}</span>
-                                <span style="color:#a0b0c0; margin-left:10px;">Exp: ${new Date(data.expiry).toLocaleDateString()}</span>
+                        <div class="key-info">
+                            <div class="key-code">${{key}}</div>
+                            <div class="key-meta">
+                                <span class="${{statusClass}}">${{statusText}}</span>
+                                <span style="margin-left:10px;">Exp: ${{expiry.toLocaleDateString()}}</span>
+                                ${{data.hwid ? `<span style="margin-left:10px;">HWID: ${{data.hwid.substring(0,8)}}...</span>` : ''}}
+                                ${{data.extended ? `<span style="margin-left:10px;">Extended: +${{data.extended}} days</span>` : ''}}
                             </div>
                         </div>
-                        <button onclick="deleteKey('${key}')" style="background:#ff6464;">Delete</button>
+                        <div class="key-actions">
+                            <button class="warning" onclick="showExtendModal('${{key}}')">⏰ Extend</button>
+                            <button class="danger" onclick="deleteKey('${{key}}')">🗑️ Delete</button>
+                        </div>
                     `;
-                    list.appendChild(div);
-                });
-            }
+                    
+                    container.appendChild(div);
+                }});
+            }}
             
-            async function generateKeys() {
-                const count = document.getElementById('count').value;
-                const days = document.getElementById('days').value;
+            function switchTab(days) {{
+                // Update tab buttons
+                document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+                event.target.classList.add('active');
                 
-                const res = await fetch('/admin/api/generate', {
+                // Hide all tabs
+                document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+                
+                // Show selected tab
+                if (days === 'all') {{
+                    document.getElementById('tab-all').classList.add('active');
+                }} else {{
+                    document.getElementById(`tab-${{days}}`).classList.add('active');
+                }}
+            }}
+            
+            async function generateKeys() {{
+                const count = document.getElementById('genCount').value;
+                const days = document.getElementById('genDuration').value;
+                
+                const res = await fetch('/admin/api/generate', {{
                     method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({count: parseInt(count), days: parseInt(days)})
-                });
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{count: parseInt(count), days: parseInt(days)}})
+                }});
                 
                 const data = await res.json();
                 const generatedDiv = document.getElementById('generated');
@@ -393,22 +628,68 @@ def admin():
                 loadStats();
                 loadKeys();
                 
-                setTimeout(() => {
+                setTimeout(() => {{
                     generatedDiv.style.display = 'none';
-                }, 5000);
-            }
+                }}, 5000);
+            }}
             
-            async function deleteKey(key) {
-                if (confirm('Delete this key?')) {
-                    await fetch('/admin/api/delete/' + key, {method: 'DELETE'});
-                    loadKeys();
+            function showExtendModal(key) {{
+                currentExtendKey = key;
+                document.getElementById('extendKeyCode').textContent = key;
+                document.getElementById('extendModal').style.display = 'flex';
+            }}
+            
+            async function confirmExtend() {{
+                const days = document.getElementById('extendDays').value;
+                
+                const res = await fetch('/admin/api/extend', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{key: currentExtendKey, days: parseInt(days)}})
+                }});
+                
+                const data = await res.json();
+                
+                if (data.success) {{
+                    alert(`✅ Key extended by ${{days}} days!`);
+                    closeModal();
                     loadStats();
-                }
-            }
+                    loadKeys();
+                }} else {{
+                    alert('❌ Error: ' + data.error);
+                }}
+            }}
             
+            function closeModal() {{
+                document.getElementById('extendModal').style.display = 'none';
+                currentExtendKey = null;
+            }}
+            
+            async function deleteKey(key) {{
+                if (confirm('Permanently delete this key?')) {{
+                    await fetch('/admin/api/delete/' + key, {{method: 'DELETE'}});
+                    loadStats();
+                    loadKeys();
+                }}
+            }}
+            
+            // Load everything
             loadStats();
             loadKeys();
-            setInterval(loadStats, 30000);
+            
+            // Refresh every 30 seconds
+            setInterval(() => {{
+                loadStats();
+                loadKeys();
+            }}, 30000);
+            
+            // Close modal when clicking outside
+            window.onclick = function(event) {{
+                const modal = document.getElementById('extendModal');
+                if (event.target === modal) {{
+                    closeModal();
+                }}
+            }}
         </script>
     </body>
     </html>
@@ -439,7 +720,8 @@ def admin_generate_keys():
             'expiry': expiry,
             'used': False,
             'hwid': None,
-            'created': datetime.now().isoformat()
+            'created': datetime.now().isoformat(),
+            'duration': f"{days}days"
         }
         new_keys.append(key)
     
