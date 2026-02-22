@@ -1,19 +1,49 @@
 #!/usr/bin/env python3
 """
-ATLAS R6-SCRIPT - UNIFIED APP WITH ADMIN PANEL
+ATLAS R6-SCRIPT - DEBUG VERSION
 """
 
 import os
+import sys
 import json
 import secrets
 import hashlib
+import traceback
 from datetime import datetime, timedelta
 from flask import Flask, render_template, jsonify, request, session, redirect, url_for
 from flask_cors import CORS
 from functools import wraps
 
 # ============================================================================
-# INIT
+# PRINT DEBUG INFO ON STARTUP
+# ============================================================================
+print("\n" + "="*60)
+print("🚀 ATLAS APP STARTING - DEBUG MODE")
+print("="*60)
+print(f"📁 Current directory: {os.getcwd()}")
+print(f"📁 Files in current dir: {os.listdir('.')}")
+
+# Check if templates folder exists
+templates_path = os.path.join(os.getcwd(), 'templates')
+print(f"📁 Templates path: {templates_path}")
+print(f"📁 Templates exists: {os.path.exists(templates_path)}")
+
+if os.path.exists(templates_path):
+    print(f"📄 Files in templates: {os.listdir(templates_path)}")
+    
+    # Check if index.html exists
+    index_path = os.path.join(templates_path, 'index.html')
+    print(f"📄 index.html exists: {os.path.exists(index_path)}")
+else:
+    print("❌ TEMPLATES FOLDER NOT FOUND!")
+    print("   Creating templates folder...")
+    os.makedirs(templates_path, exist_ok=True)
+    print("✅ Created templates folder")
+
+print("="*60 + "\n")
+
+# ============================================================================
+# INIT FLASK
 # ============================================================================
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
@@ -32,9 +62,9 @@ def load_keys():
         if os.path.exists(KEY_FILE):
             with open(KEY_FILE, 'r') as f:
                 KEYS = json.load(f)
-            print(f"✅ Loaded {len(KEYS)} keys")
+            print(f"✅ Loaded {len(KEYS)} keys from {KEY_FILE}")
         else:
-            # Create default keys
+            print(f"📄 {KEY_FILE} not found, creating default keys")
             create_default_keys()
     except Exception as e:
         print(f"❌ Error loading keys: {e}")
@@ -45,8 +75,10 @@ def save_keys():
     try:
         with open(KEY_FILE, 'w') as f:
             json.dump(KEYS, f, indent=2)
+        print(f"✅ Saved {len(KEYS)} keys to {KEY_FILE}")
         return True
-    except:
+    except Exception as e:
+        print(f"❌ Error saving keys: {e}")
         return False
 
 def create_default_keys():
@@ -81,7 +113,7 @@ def create_default_keys():
 load_keys()
 
 # ============================================================================
-# LOGIN DECORATOR FOR ADMIN
+# LOGIN DECORATOR
 # ============================================================================
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "atlas2026"
@@ -95,6 +127,18 @@ def login_required(f):
     return decorated_function
 
 # ============================================================================
+# ERROR HANDLERS
+# ============================================================================
+
+@app.errorhandler(404)
+def not_found(e):
+    return jsonify({'error': 'Not found'}), 404
+
+@app.errorhandler(500)
+def internal_error(e):
+    return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
+
+# ============================================================================
 # PUBLIC ROUTES
 # ============================================================================
 
@@ -102,9 +146,22 @@ def login_required(f):
 def index():
     """Main GUI - Your recoil menu"""
     try:
+        print("📝 Rendering index.html...")
         return render_template('index.html')
     except Exception as e:
-        return f"Error loading template: {e}"
+        print(f"❌ Error rendering template: {e}")
+        traceback.print_exc()
+        return f"""
+        <html>
+        <head><title>Error</title></head>
+        <body style="background:#0a0f1e; color:#00ffff; font-family:monospace; padding:20px;">
+            <h1>❌ Template Error</h1>
+            <p>{str(e)}</p>
+            <p>Templates path: {os.path.join(os.getcwd(), 'templates')}</p>
+            <p>Files in templates: {os.listdir(os.path.join(os.getcwd(), 'templates')) if os.path.exists(os.path.join(os.getcwd(), 'templates')) else 'No templates folder'}</p>
+        </body>
+        </html>
+        """, 200
 
 @app.route('/api/status')
 def status():
@@ -112,39 +169,44 @@ def status():
     return jsonify({
         'status': 'online',
         'time': datetime.now().isoformat(),
-        'keys_loaded': len(KEYS)
+        'keys_loaded': len(KEYS),
+        'templates_exist': os.path.exists(os.path.join(os.getcwd(), 'templates')),
+        'index_exists': os.path.exists(os.path.join(os.getcwd(), 'templates', 'index.html'))
     })
 
 @app.route('/api/validate', methods=['POST'])
 def validate_key():
     """Key validation API"""
-    data = request.json
-    key = data.get('key', '').strip().upper()
-    hwid = data.get('hwid', '')
-    
-    if key not in KEYS:
-        return jsonify({'valid': False, 'message': 'Invalid key'})
-    
-    key_data = KEYS[key]
-    expiry = datetime.fromisoformat(key_data['expiry'])
-    
-    if expiry < datetime.now():
-        return jsonify({'valid': False, 'message': 'Key expired'})
-    
-    if key_data['used'] and key_data['hwid'] != hwid:
-        return jsonify({'valid': False, 'message': 'Key already in use'})
-    
-    if not key_data['used']:
-        key_data['used'] = True
-        key_data['hwid'] = hwid
-        key_data['activated_date'] = datetime.now().isoformat()
-        save_keys()
-    
-    return jsonify({
-        'valid': True,
-        'message': 'Key valid',
-        'expiry': key_data['expiry']
-    })
+    try:
+        data = request.json
+        key = data.get('key', '').strip().upper()
+        hwid = data.get('hwid', '')
+        
+        if key not in KEYS:
+            return jsonify({'valid': False, 'message': 'Invalid key'})
+        
+        key_data = KEYS[key]
+        expiry = datetime.fromisoformat(key_data['expiry'])
+        
+        if expiry < datetime.now():
+            return jsonify({'valid': False, 'message': 'Key expired'})
+        
+        if key_data['used'] and key_data['hwid'] != hwid:
+            return jsonify({'valid': False, 'message': 'Key already in use'})
+        
+        if not key_data['used']:
+            key_data['used'] = True
+            key_data['hwid'] = hwid
+            key_data['activated_date'] = datetime.now().isoformat()
+            save_keys()
+        
+        return jsonify({
+            'valid': True,
+            'message': 'Key valid',
+            'expiry': key_data['expiry']
+        })
+    except Exception as e:
+        return jsonify({'valid': False, 'message': f'Error: {str(e)}'}), 500
 
 # ============================================================================
 # ADMIN LOGIN ROUTES
@@ -247,7 +309,7 @@ def logout():
     return redirect(url_for('login'))
 
 # ============================================================================
-# ADMIN PANEL (Protected)
+# ADMIN PANEL
 # ============================================================================
 
 @app.route('/admin')
@@ -257,7 +319,7 @@ def admin_panel():
     return render_template_string(ADMIN_HTML)
 
 # ============================================================================
-# ADMIN API (Protected)
+# ADMIN API
 # ============================================================================
 
 @app.route('/admin/api/keys', methods=['GET'])
@@ -268,35 +330,41 @@ def admin_get_keys():
 @app.route('/admin/api/generate', methods=['POST'])
 @login_required
 def admin_generate_keys():
-    data = request.json
-    count = int(data.get('count', 5))
-    days = int(data.get('days', 7))
-    
-    new_keys = []
-    expiry = (datetime.now() + timedelta(days=days)).isoformat()
-    
-    for i in range(count):
-        key = '-'.join([secrets.token_hex(2).upper() for _ in range(6)])
-        KEYS[key] = {
-            'expiry': expiry,
-            'used': False,
-            'hwid': None,
-            'created': datetime.now().isoformat(),
-            'duration': f"{days}days"
-        }
-        new_keys.append(key)
-    
-    save_keys()
-    return jsonify({'success': True, 'keys': new_keys})
+    try:
+        data = request.json
+        count = int(data.get('count', 5))
+        days = int(data.get('days', 7))
+        
+        new_keys = []
+        expiry = (datetime.now() + timedelta(days=days)).isoformat()
+        
+        for i in range(count):
+            key = '-'.join([secrets.token_hex(2).upper() for _ in range(6)])
+            KEYS[key] = {
+                'expiry': expiry,
+                'used': False,
+                'hwid': None,
+                'created': datetime.now().isoformat(),
+                'duration': f"{days}days"
+            }
+            new_keys.append(key)
+        
+        save_keys()
+        return jsonify({'success': True, 'keys': new_keys})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/admin/api/delete/<key>', methods=['DELETE'])
 @login_required
 def admin_delete_key(key):
-    if key in KEYS:
-        del KEYS[key]
-        save_keys()
-        return jsonify({'success': True})
-    return jsonify({'success': False}), 404
+    try:
+        if key in KEYS:
+            del KEYS[key]
+            save_keys()
+            return jsonify({'success': True})
+        return jsonify({'success': False}), 404
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/admin/api/stats', methods=['GET'])
 @login_required
@@ -307,20 +375,19 @@ def admin_stats():
     return jsonify({'total': total, 'used': used, 'available': total - used, 'expired': expired})
 
 # ============================================================================
-# ADMIN HTML (Embedded)
+# ADMIN HTML
 # ============================================================================
 
 ADMIN_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>ATLAS Admin Panel</title>
+    <title>ATLAS Admin</title>
     <style>
         * { margin:0; padding:0; box-sizing:border-box; font-family:monospace; }
         body { 
             background: linear-gradient(135deg, #0a0f1e 0%, #001520 100%);
             padding:20px;
-            min-height: 100vh;
         }
         .container { max-width:1200px; margin:0 auto; }
         .header { 
@@ -382,9 +449,6 @@ ADMIN_HTML = """
         button:hover {
             background: #ffffff;
             box-shadow: 0 0 20px #00ffff;
-        }
-        button.danger {
-            background: #ff6464;
         }
         .key-list { 
             max-height:400px; 
@@ -486,7 +550,7 @@ ADMIN_HTML = """
                             ${data.hwid ? `<span style="color:#ffaa00; margin-left:10px;">HWID: ${data.hwid.substring(0,8)}...</span>` : ''}
                         </div>
                     </div>
-                    <button class="danger" onclick="deleteKey('${key}')">Delete</button>
+                    <button onclick="deleteKey('${key}')" style="background:#ff6464;">Delete</button>
                 `;
                 list.appendChild(div);
             });
@@ -512,22 +576,19 @@ ADMIN_HTML = """
             
             setTimeout(() => {
                 generatedDiv.style.display = 'none';
-            }, 10000);
+            }, 5000);
         }
         
         async function deleteKey(key) {
-            if (confirm('Permanently delete this key?')) {
+            if (confirm('Delete this key?')) {
                 await fetch('/admin/api/delete/' + key, {method: 'DELETE'});
                 loadKeys();
                 loadStats();
             }
         }
         
-        // Load everything
         loadStats();
         loadKeys();
-        
-        // Refresh every 30 seconds
         setInterval(() => {
             loadStats();
             loadKeys();
@@ -542,16 +603,17 @@ ADMIN_HTML = """
 # ============================================================================
 
 if __name__ == '__main__':
-    from flask import render_template_string  # Import here for admin panel
+    from flask import render_template_string
     
     port = int(os.environ.get('PORT', 10000))
-    print(f"\n{'='*50}")
-    print(f"🚀 ATLAS UNIFIED APP")
-    print(f"{'='*50}")
+    print(f"\n{'='*60}")
+    print(f"🚀 ATLAS APP RUNNING ON PORT {port}")
+    print(f"{'='*60}")
     print(f"🌐 GUI: https://atlas-r6-keys.onrender.com/")
     print(f"🔑 API: https://atlas-r6-keys.onrender.com/api/validate")
-    print(f"👑 Admin Login: https://atlas-r6-keys.onrender.com/login")
-    print(f"📊 Admin Panel: https://atlas-r6-keys.onrender.com/admin")
+    print(f"👑 Login: https://atlas-r6-keys.onrender.com/login")
+    print(f"📊 Admin: https://atlas-r6-keys.onrender.com/admin")
     print(f"📁 Keys loaded: {len(KEYS)}")
-    print(f"{'='*50}\n")
+    print(f"{'='*60}\n")
+    
     app.run(host='0.0.0.0', port=port, debug=False)
