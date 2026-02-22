@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ATLAS R6-SCRIPT - CLOUD SERVER WITH PROFILES
+ATLAS R6-SCRIPT - CLOUD SERVER WITH WORKING ADMIN PANEL
 """
 
 import os
@@ -110,6 +110,8 @@ load_profiles()
 # ============================================================================
 # LOGIN DECORATOR
 # ============================================================================
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD = "atlas2026"
 
 def login_required(f):
     @wraps(f)
@@ -124,7 +126,7 @@ def login_required(f):
 # ============================================================================
 
 @app.route('/')
-def index():
+def home():
     return "ATLAS Key Server Online!"
 
 @app.route('/api/status')
@@ -166,7 +168,7 @@ def validate_key():
     })
 
 # ============================================================================
-# PROFILE API - NEW!
+# PROFILE API
 # ============================================================================
 
 @app.route('/api/profiles/<hwid>', methods=['GET'])
@@ -211,21 +213,6 @@ def delete_profile(hwid):
     
     return jsonify({'success': False}), 404
 
-@app.route('/api/profiles/<hwid>/update', methods=['POST'])
-def update_profile(hwid):
-    """Update an existing profile"""
-    data = request.json
-    name = data.get('name')
-    profile_data = data.get('data')
-    
-    if hwid in USER_PROFILES and name in USER_PROFILES[hwid]:
-        USER_PROFILES[hwid][name]['data'] = profile_data
-        USER_PROFILES[hwid][name]['updated'] = datetime.now().isoformat()
-        save_profiles()
-        return jsonify({'success': True})
-    
-    return jsonify({'success': False}), 404
-
 # ============================================================================
 # ADMIN LOGIN ROUTES
 # ============================================================================
@@ -250,6 +237,7 @@ def login():
             </html>
             '''
     
+    # Login form
     return '''
     <!DOCTYPE html>
     <html>
@@ -396,6 +384,7 @@ ADMIN_HTML = """
         body { 
             background: linear-gradient(135deg, #0a0f1e 0%, #001520 100%);
             padding:20px;
+            min-height: 100vh;
         }
         .container { max-width:1200px; margin:0 auto; }
         .header { 
@@ -502,7 +491,7 @@ ADMIN_HTML = """
         
         <div class="stats" id="stats">
             <div class="stat-card"><div class="stat-value" id="total">0</div><div>Total Keys</div></div>
-            <div class="stat-card"><div class="stat-value" id="used">0</div><div>Used</div></div>
+            <div class="stat-card"><div class="stat-value" id="used">0</div><div>Used Keys</div></div>
             <div class="stat-card"><div class="stat-value" id="available">0</div><div>Available</div></div>
             <div class="stat-card"><div class="stat-value" id="expired">0</div><div>Expired</div></div>
         </div>
@@ -527,75 +516,94 @@ ADMIN_HTML = """
     
     <script>
         async function loadStats() {
-            const res = await fetch('/admin/api/stats');
-            const data = await res.json();
-            document.getElementById('total').textContent = data.total;
-            document.getElementById('used').textContent = data.used;
-            document.getElementById('available').textContent = data.available;
-            document.getElementById('expired').textContent = data.expired;
+            try {
+                const res = await fetch('/admin/api/stats');
+                const data = await res.json();
+                document.getElementById('total').textContent = data.total;
+                document.getElementById('used').textContent = data.used;
+                document.getElementById('available').textContent = data.available;
+                document.getElementById('expired').textContent = data.expired;
+            } catch (e) {
+                console.error('Failed to load stats', e);
+            }
         }
         
         async function loadKeys() {
-            const res = await fetch('/admin/api/keys');
-            const keys = await res.json();
-            const list = document.getElementById('keyList');
-            list.innerHTML = '';
-            
-            Object.entries(keys).sort((a,b) => new Date(b[1].created) - new Date(a[1].created)).forEach(([key, data]) => {
-                const div = document.createElement('div');
-                div.className = 'key-item';
+            try {
+                const res = await fetch('/admin/api/keys');
+                const keys = await res.json();
+                const list = document.getElementById('keyList');
+                list.innerHTML = '';
                 
-                const status = data.used ? 'USED' : 'AVAILABLE';
-                const statusColor = data.used ? '#ffaa00' : '#00ff00';
-                const expiryDate = new Date(data.expiry).toLocaleDateString();
-                
-                div.innerHTML = `
-                    <div>
-                        <div style="color:#00ffff; font-family:monospace; font-size:16px;">${key}</div>
-                        <div style="margin-top:5px;">
-                            <span style="color:${statusColor};">${status}</span>
-                            <span style="color:#a0b0c0; margin-left:10px;">Exp: ${expiryDate}</span>
+                Object.entries(keys).sort((a,b) => new Date(b[1].created) - new Date(a[1].created)).forEach(([key, data]) => {
+                    const div = document.createElement('div');
+                    div.className = 'key-item';
+                    
+                    const status = data.used ? 'USED' : 'AVAILABLE';
+                    const statusColor = data.used ? '#ffaa00' : '#00ff00';
+                    const expiryDate = new Date(data.expiry).toLocaleDateString();
+                    
+                    div.innerHTML = `
+                        <div>
+                            <div style="color:#00ffff; font-family:monospace; font-size:16px;">${key}</div>
+                            <div style="margin-top:5px;">
+                                <span style="color:${statusColor};">${status}</span>
+                                <span style="color:#a0b0c0; margin-left:10px;">Exp: ${expiryDate}</span>
+                            </div>
                         </div>
-                    </div>
-                    <button onclick="deleteKey('${key}')" style="background:#ff6464;">Delete</button>
-                `;
-                list.appendChild(div);
-            });
+                        <button onclick="deleteKey('${key}')" style="background:#ff6464;">Delete</button>
+                    `;
+                    list.appendChild(div);
+                });
+            } catch (e) {
+                console.error('Failed to load keys', e);
+            }
         }
         
         async function generateKeys() {
-            const count = document.getElementById('count').value;
-            const days = document.getElementById('days').value;
-            
-            const res = await fetch('/admin/api/generate', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({count: parseInt(count), days: parseInt(days)})
-            });
-            
-            const data = await res.json();
-            const generatedDiv = document.getElementById('generated');
-            generatedDiv.style.display = 'block';
-            generatedDiv.innerHTML = '✅ Generated ' + data.keys.length + ' keys:<br>' + data.keys.join('<br>');
-            
-            loadStats();
-            loadKeys();
-            
-            setTimeout(() => {
-                generatedDiv.style.display = 'none';
-            }, 5000);
+            try {
+                const count = document.getElementById('count').value;
+                const days = document.getElementById('days').value;
+                
+                const res = await fetch('/admin/api/generate', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({count: parseInt(count), days: parseInt(days)})
+                });
+                
+                const data = await res.json();
+                const generatedDiv = document.getElementById('generated');
+                generatedDiv.style.display = 'block';
+                generatedDiv.innerHTML = '✅ Generated ' + data.keys.length + ' keys:<br>' + data.keys.join('<br>');
+                
+                loadStats();
+                loadKeys();
+                
+                setTimeout(() => {
+                    generatedDiv.style.display = 'none';
+                }, 5000);
+            } catch (e) {
+                console.error('Failed to generate keys', e);
+            }
         }
         
         async function deleteKey(key) {
             if (confirm('Delete this key?')) {
-                await fetch('/admin/api/delete/' + key, {method: 'DELETE'});
-                loadKeys();
-                loadStats();
+                try {
+                    await fetch('/admin/api/delete/' + key, {method: 'DELETE'});
+                    loadKeys();
+                    loadStats();
+                } catch (e) {
+                    console.error('Failed to delete key', e);
+                }
             }
         }
         
+        // Load everything
         loadStats();
         loadKeys();
+        
+        // Refresh every 30 seconds
         setInterval(() => {
             loadStats();
             loadKeys();
@@ -616,6 +624,7 @@ if __name__ == '__main__':
     print(f"{'='*50}")
     print(f"🔑 Keys loaded: {len(KEYS)}")
     print(f"📁 Profiles loaded: {len(USER_PROFILES)}")
-    print(f"👑 Admin: /login")
+    print(f"👑 Admin login: https://atlas-r6-keys.onrender.com/login")
+    print(f"📊 Admin panel: https://atlas-r6-keys.onrender.com/admin")
     print(f"{'='*50}\n")
     app.run(host='0.0.0.0', port=port)
