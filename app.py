@@ -1,18 +1,12 @@
 #!/usr/bin/env python3
 """
-ATLAS R6-SCRIPT - UNIFIED APP
-One app that does EVERYTHING:
-- Serves the recoil GUI at /
-- Provides key validation API at /api/validate
-- Admin panel at /admin
-- All in one service!
+ATLAS R6-SCRIPT - UNIFIED APP WITH ADMIN PANEL
 """
 
 import os
 import json
 import secrets
 import hashlib
-import time
 from datetime import datetime, timedelta
 from flask import Flask, render_template, jsonify, request, session, redirect, url_for
 from flask_cors import CORS
@@ -101,7 +95,7 @@ def login_required(f):
     return decorated_function
 
 # ============================================================================
-# PUBLIC ROUTES (No login required)
+# PUBLIC ROUTES
 # ============================================================================
 
 @app.route('/')
@@ -123,7 +117,7 @@ def status():
 
 @app.route('/api/validate', methods=['POST'])
 def validate_key():
-    """Key validation API - Used by your local app"""
+    """Key validation API"""
     data = request.json
     key = data.get('key', '').strip().upper()
     hwid = data.get('hwid', '')
@@ -153,7 +147,7 @@ def validate_key():
     })
 
 # ============================================================================
-# ADMIN ROUTES (Login required)
+# ADMIN LOGIN ROUTES
 # ============================================================================
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -172,6 +166,7 @@ def login():
             <head><title>Login Failed</title></head>
             <body style="background:#0a0f1e; color:#ff0000; font-family:monospace; padding:20px;">
                 <h1>❌ Login Failed</h1>
+                <p>Invalid username or password</p>
                 <a href="/login" style="color:#00ffff;">Try again</a>
             </body>
             </html>
@@ -251,6 +246,10 @@ def logout():
     session.pop('logged_in', None)
     return redirect(url_for('login'))
 
+# ============================================================================
+# ADMIN PANEL (Protected)
+# ============================================================================
+
 @app.route('/admin')
 @login_required
 def admin_panel():
@@ -258,7 +257,7 @@ def admin_panel():
     return render_template_string(ADMIN_HTML)
 
 # ============================================================================
-# ADMIN API (Login required)
+# ADMIN API (Protected)
 # ============================================================================
 
 @app.route('/admin/api/keys', methods=['GET'])
@@ -308,19 +307,20 @@ def admin_stats():
     return jsonify({'total': total, 'used': used, 'available': total - used, 'expired': expired})
 
 # ============================================================================
-# ADMIN HTML
+# ADMIN HTML (Embedded)
 # ============================================================================
 
 ADMIN_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>ATLAS Admin</title>
+    <title>ATLAS Admin Panel</title>
     <style>
         * { margin:0; padding:0; box-sizing:border-box; font-family:monospace; }
         body { 
             background: linear-gradient(135deg, #0a0f1e 0%, #001520 100%);
             padding:20px;
+            min-height: 100vh;
         }
         .container { max-width:1200px; margin:0 auto; }
         .header { 
@@ -383,6 +383,9 @@ ADMIN_HTML = """
             background: #ffffff;
             box-shadow: 0 0 20px #00ffff;
         }
+        button.danger {
+            background: #ff6464;
+        }
         .key-list { 
             max-height:400px; 
             overflow-y:auto; 
@@ -440,7 +443,7 @@ ADMIN_HTML = """
                 <option value="30">30 Days</option>
                 <option value="365">1 Year</option>
             </select>
-            <button onclick="generate()">Generate Keys</button>
+            <button onclick="generateKeys()">Generate Keys</button>
             <div id="generated" class="generated" style="display:none;"></div>
         </div>
         
@@ -483,13 +486,13 @@ ADMIN_HTML = """
                             ${data.hwid ? `<span style="color:#ffaa00; margin-left:10px;">HWID: ${data.hwid.substring(0,8)}...</span>` : ''}
                         </div>
                     </div>
-                    <button onclick="deleteKey('${key}')" style="background:#ff6464;">Delete</button>
+                    <button class="danger" onclick="deleteKey('${key}')">Delete</button>
                 `;
                 list.appendChild(div);
             });
         }
         
-        async function generate() {
+        async function generateKeys() {
             const count = document.getElementById('count').value;
             const days = document.getElementById('days').value;
             
@@ -539,13 +542,16 @@ ADMIN_HTML = """
 # ============================================================================
 
 if __name__ == '__main__':
+    from flask import render_template_string  # Import here for admin panel
+    
     port = int(os.environ.get('PORT', 10000))
     print(f"\n{'='*50}")
     print(f"🚀 ATLAS UNIFIED APP")
     print(f"{'='*50}")
-    print(f"🌐 GUI: http://localhost:{port}/")
-    print(f"🔑 API: http://localhost:{port}/api/validate")
-    print(f"👑 Admin: http://localhost:{port}/login")
+    print(f"🌐 GUI: https://atlas-r6-keys.onrender.com/")
+    print(f"🔑 API: https://atlas-r6-keys.onrender.com/api/validate")
+    print(f"👑 Admin Login: https://atlas-r6-keys.onrender.com/login")
+    print(f"📊 Admin Panel: https://atlas-r6-keys.onrender.com/admin")
     print(f"📁 Keys loaded: {len(KEYS)}")
     print(f"{'='*50}\n")
     app.run(host='0.0.0.0', port=port, debug=False)
