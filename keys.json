@@ -1,0 +1,356 @@
+{
+  "7EF1-A0ED-7AC7-1F41-3E47-D83E": {
+    "expiry": "2026-02-28T23:22:07.090648",
+    "used": true,
+    "hwid": "BA133C0CDA3DBD6766EDDFA9BE777A55",
+    "duration": "7days",
+    "created": "2026-02-21T23:22:07.090676",
+    "activated_date": "2026-02-21T23:22:58.480689",
+    "activation_count": 1
+  },
+  "14AF-890D-5440-2E79-6C8F-544B": {
+    "expiry": "2026-02-28T23:22:07.090648",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:22:07.090683"
+  },
+  "7F86-820A-71AE-A58C-74EA-9CF3": {
+    "expiry": "2026-02-28T23:22:07.090648",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:22:07.090688"
+  },
+  "C09F-7B0B-0610-17F6-AE47-7421": {
+    "expiry": "2026-02-28T23:22:07.090648",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:22:07.090692"
+  },
+  "97D5-90FA-4A48-E640-CC08-8594": {
+    "expiry": "2026-02-28T23:22:07.090648",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:22:07.090696"
+  },
+  "D3EE-AE26-EEC4-B4AB-FAA2-33A7": {
+    "expiry": "2026-02-28T23:22:07.090648",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:22:07.090700"
+  },
+  "3049-4C67-5E68-4642-DE13-C0E3": {
+    "expiry": "2026-02-28T23:22:07.090648",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:22:07.090704"
+  },
+  "5FD6-8B2D-AA5C-2977-7536-2D49": {
+    "expiry": "2026-02-28T23:22:07.090648",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:22:07.090707"
+  },
+  "1833-9575-A4B9-4B84-E420-CC4C": {
+    "expiry": "2026-02-28T23:22:07.090648",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:22:07.090711"
+  },
+  "69B6-0EF2-936C-63F9-31BA-0948": {
+    "expiry": "2026-02-28T23:22:07.090648",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:22:07.090714"
+  },
+  "56D0-830C-3242-CEB7-D593-9D07": {
+    "expiry": "2026-02-28T23:22:07.090648",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:22:07.090718"
+  },
+  "9928-559D-A8A0-EB49-AE57-1134": {
+    "expiry": "2026-02-28T23:22:07.090648",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:22:07.090724"
+  },
+  "CF59-1958-1EE1-237C-30F0-0684": {
+    "expiry": "2026-02-28T23:22:07.090648",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:22:07.090727"
+  },
+  "C8CF-255F-D17B-A7CD-149D-2C13": {
+    "expiry": "2026-02-28T23:22:07.090648",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:22:07.090731"
+  },
+  "B334-0BBF-55F8-36C6-97D8-202F": {
+    "expiry": "2026-02-28T23:22:07.090648",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:22:07.090734"
+  },
+  "B46E-D328-7C4C-39C1-3C52-0229": {
+    "expiry": "2026-02-28T23:22:07.090648",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:22:07.090737"
+  },
+  "97E3-2D75-138E-93BE-79A8-01FF": {
+    "expiry": "2026-02-28T23:22:07.090648",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:22:07.090740"
+  },
+  "FB53-3CAC-50C6-370D-0CA0-39FE": {
+    "expiry": "2026-02-28T23:22:07.090648",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:22:07.090744"
+  },
+  "4F95-491E-8080-E534-CD95-D72A": {
+    "expiry": "2026-02-28T23:22:07.090648",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:22:07.090747"
+  },
+  "EDEB-37AD-3ACF-6ECD-ECB9-F262": {
+    "expiry": "2026-02-28T23:22:07.090648",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:22:07.090750"
+  },
+  "58C5-8EDF-A43C-A59D-A1B5-2D6B": {
+    "expiry": "2026-02-28T23:22:07.090648",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:22:07.090753"
+  },
+  "A69A-C0F3-DA29-70C5-134A-1C83": {
+    "expiry": "2026-02-28T23:22:07.090648",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:22:07.090757"
+  },
+  "E4F3-AEFE-5613-9044-C170-53F4": {
+    "expiry": "2026-02-28T23:22:07.090648",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:22:07.090761"
+  },
+  "B956-AA22-3CE3-7AB7-8C5D-F243": {
+    "expiry": "2026-02-28T23:22:07.090648",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:22:07.090765"
+  },
+  "9BBD-E4B0-BB6A-A1D0-D83D-58AA": {
+    "expiry": "2026-02-28T23:22:07.090648",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:22:07.090768"
+  },
+  "387F-AE2D-0D65-9CA7-8D33-076D": {
+    "expiry": "2026-02-28T23:31:14.238966",
+    "used": true,
+    "hwid": "BA133C0CDA3DBD6766EDDFA9BE777A55",
+    "duration": "7days",
+    "created": "2026-02-21T23:31:14.238998",
+    "activated_date": "2026-02-21T23:31:27.720014",
+    "activation_count": 1
+  },
+  "6D44-4CAA-EFB4-91F9-7F17-A88B": {
+    "expiry": "2026-02-28T23:31:14.238966",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:31:14.239006"
+  },
+  "E6A2-1068-D5B4-EAA6-2AFA-B1CD": {
+    "expiry": "2026-02-28T23:31:14.238966",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:31:14.239012"
+  },
+  "04AA-E81A-9A0E-284B-5917-1FF1": {
+    "expiry": "2026-02-28T23:31:14.238966",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:31:14.239016"
+  },
+  "D850-EEB6-54DB-F4CD-69E5-77B6": {
+    "expiry": "2026-02-28T23:31:14.238966",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:31:14.239020"
+  },
+  "4687-5BE2-A847-37E2-C5BA-C188": {
+    "expiry": "2026-02-28T23:31:14.238966",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:31:14.239025"
+  },
+  "CF01-FA93-ED30-F1D5-AECF-F08E": {
+    "expiry": "2026-02-28T23:31:14.238966",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:31:14.239029"
+  },
+  "7AD4-D751-720E-AAD6-BBAF-592A": {
+    "expiry": "2026-02-28T23:31:14.238966",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:31:14.239033"
+  },
+  "E726-148F-B5A2-F6F9-F00A-FA67": {
+    "expiry": "2026-02-28T23:31:14.238966",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:31:14.239038"
+  },
+  "C26D-48F9-EC62-88C3-609E-B5AC": {
+    "expiry": "2026-02-28T23:31:14.238966",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:31:14.239042"
+  },
+  "B4F5-7328-1B2A-A711-8751-3963": {
+    "expiry": "2026-02-28T23:31:14.238966",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:31:14.239046"
+  },
+  "25A3-5D21-C8B6-A3BD-8A53-81F3": {
+    "expiry": "2026-02-28T23:31:14.238966",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:31:14.239051"
+  },
+  "7F09-B0DE-2CF4-BB87-5C78-4173": {
+    "expiry": "2026-02-28T23:31:14.238966",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:31:14.239056"
+  },
+  "3CED-6981-B507-A6DD-3A50-3B55": {
+    "expiry": "2026-02-28T23:31:14.238966",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:31:14.239060"
+  },
+  "9C16-22B6-3CD8-E5C5-F4D4-EC60": {
+    "expiry": "2026-02-28T23:31:14.238966",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:31:14.239065"
+  },
+  "28C1-A6C9-140D-3F04-E9C3-0747": {
+    "expiry": "2026-02-28T23:31:14.238966",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:31:14.239069"
+  },
+  "2BDE-F22A-9412-7660-5B43-0481": {
+    "expiry": "2026-02-28T23:31:14.238966",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:31:14.239074"
+  },
+  "191A-F9EF-0FE4-DDCA-CFAA-8524": {
+    "expiry": "2026-02-28T23:31:14.238966",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:31:14.239078"
+  },
+  "DFE4-F1C0-C33B-7E98-E998-E4AA": {
+    "expiry": "2026-02-28T23:31:14.238966",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:31:14.239084"
+  },
+  "FEC9-0F65-4699-F311-19C1-18FF": {
+    "expiry": "2026-02-28T23:31:14.238966",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:31:14.239088"
+  },
+  "3F5C-10CA-B544-336C-0254-5FB0": {
+    "expiry": "2026-02-28T23:31:14.238966",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:31:14.239092"
+  },
+  "56E0-83AE-EAC8-9AC4-88F7-F401": {
+    "expiry": "2026-02-28T23:31:14.238966",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:31:14.239096"
+  },
+  "36A0-D741-0427-EF3D-0E8F-03D2": {
+    "expiry": "2026-02-28T23:31:14.238966",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:31:14.239101"
+  },
+  "C1ED-FE5E-E54D-EE4B-B722-8D68": {
+    "expiry": "2026-02-28T23:31:14.238966",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:31:14.239105"
+  },
+  "7F11-D1B9-B840-B6C1-F2EE-9977": {
+    "expiry": "2026-02-28T23:31:14.238966",
+    "used": false,
+    "hwid": null,
+    "duration": "7days",
+    "created": "2026-02-21T23:31:14.239109"
+  }
+}

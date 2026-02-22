@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ATLAS R6-SCRIPT - CLOUD</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', monospace; }
+        body {
+            background: linear-gradient(135deg, #0a0f1e 0%, #001520 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .container {
+            background: rgba(10, 20, 30, 0.98);
+            border: 2px solid #00ffff;
+            border-radius: 20px;
+            padding: 30px;
+            width: 100%;
+            max-width: 600px;
+            box-shadow: 0 0 50px rgba(0, 255, 255, 0.5);
+        }
+        h1 {
+            color: #00ffff;
+            text-align: center;
+            margin-bottom: 20px;
+            text-shadow: 0 0 15px #00ffff;
+        }
+        .status {
+            background: rgba(0,255,255,0.1);
+            border: 1px solid #00ffff;
+            color: #00ffff;
+            padding: 10px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        .section {
+            margin: 20px 0;
+            padding: 15px;
+            background: rgba(0,255,255,0.03);
+            border: 1px solid #00ffff30;
+            border-radius: 8px;
+        }
+        h3 {
+            color: #ffffff;
+            margin-bottom: 15px;
+            border-bottom: 1px dashed #00ffff40;
+            padding-bottom: 5px;
+        }
+        .slider-container {
+            margin: 15px 0;
+        }
+        .slider-label {
+            display: flex;
+            justify-content: space-between;
+            color: #ffffff;
+            margin-bottom: 5px;
+        }
+        .slider-label span:last-child {
+            color: #00ffff;
+            font-weight: bold;
+        }
+        input[type=range] {
+            width: 100%;
+            height: 5px;
+            background: #1a2a30;
+            border-radius: 3px;
+            outline: none;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 18px;
+            height: 18px;
+            background: #00ffff;
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 0 10px #00ffff;
+        }
+        button {
+            background: #00ffff;
+            color: #0a0f1e;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+            margin: 5px;
+        }
+        button:hover {
+            background: #ffffff;
+            box-shadow: 0 0 20px #00ffff;
+        }
+        .profile-selector {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .profile-btn {
+            flex: 1;
+            background: transparent;
+            border: 2px solid #00ffff40;
+            color: #ffffff;
+        }
+        .profile-btn.active {
+            background: #00ffff;
+            color: #0a0f1e;
+            border-color: #00ffff;
+        }
+        .key-input {
+            width: 100%;
+            padding: 10px;
+            background: #1a2a30;
+            border: 2px solid #00ffff;
+            color: #00ffff;
+            border-radius: 5px;
+            font-family: monospace;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>⚡ ATLAS R6-SCRIPT ⚡</h1>
+        <div class="status" id="serverStatus">Connecting to server...</div>
+        
+        <div class="section">
+            <h3>🔑 License Key</h3>
+            <input type="text" class="key-input" id="keyInput" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX">
+            <button id="validateBtn">Validate Key</button>
+            <div id="keyMessage" style="color:#ffaa00; margin-top:10px;"></div>
+        </div>
+        
+        <div class="section">
+            <h3>🎯 Active Profile</h3>
+            <div class="profile-selector">
+                <button class="profile-btn active" id="primaryBtn">PRIMARY</button>
+                <button class="profile-btn" id="secondaryBtn">SECONDARY</button>
+            </div>
+            
+            <div class="slider-container">
+                <div class="slider-label">
+                    <span>VERTICAL (Pull Down)</span>
+                    <span id="vertVal">50%</span>
+                </div>
+                <input type="range" min="0" max="100" value="50" id="vertSlider">
+            </div>
+            
+            <div class="slider-container">
+                <div class="slider-label">
+                    <span>LEFT MOVEMENT</span>
+                    <span id="leftVal">0%</span>
+                </div>
+                <input type="range" min="0" max="100" value="0" id="leftSlider">
+            </div>
+            
+            <div class="slider-container">
+                <div class="slider-label">
+                    <span>RIGHT MOVEMENT</span>
+                    <span id="rightVal">0%</span>
+                </div>
+                <input type="range" min="0" max="100" value="0" id="rightSlider">
+            </div>
+            
+            <div class="slider-container">
+                <div class="slider-label">
+                    <span>SENSITIVITY</span>
+                    <span id="sensVal">1.0x</span>
+                </div>
+                <input type="range" min="0.1" max="3.0" step="0.1" value="1.0" id="sensSlider">
+            </div>
+            
+            <button id="saveBtn">💾 Save Profiles</button>
+        </div>
+        
+        <div class="section">
+            <h3>📊 Stats</h3>
+            <p>Your profiles are saved in the cloud!</p>
+            <p id="stats">Ready</p>
+        </div>
+    </div>
+    
+    <script>
+        let currentProfile = 'primary';
+        let validated = false;
+        
+        // Load profiles on startup
+        async function loadProfiles() {
+            const res = await fetch('/api/profiles');
+            const data = await res.json();
+            
+            const p = data[currentProfile];
+            document.getElementById('vertSlider').value = p.v;
+            document.getElementById('leftSlider').value = p.l;
+            document.getElementById('rightSlider').value = p.r;
+            document.getElementById('sensSlider').value = p.sens;
+            
+            updateLabels();
+        }
+        
+        function updateLabels() {
+            document.getElementById('vertVal').textContent = document.getElementById('vertSlider').value + '%';
+            document.getElementById('leftVal').textContent = document.getElementById('leftSlider').value + '%';
+            document.getElementById('rightVal').textContent = document.getElementById('rightSlider').value + '%';
+            document.getElementById('sensVal').textContent = parseFloat(document.getElementById('sensSlider').value).toFixed(1) + 'x';
+        }
+        
+        // Profile switching
+        document.getElementById('primaryBtn').onclick = () => {
+            currentProfile = 'primary';
+            document.getElementById('primaryBtn').className = 'profile-btn active';
+            document.getElementById('secondaryBtn').className = 'profile-btn';
+            loadProfiles();
+        };
+        
+        document.getElementById('secondaryBtn').onclick = () => {
+            currentProfile = 'secondary';
+            document.getElementById('primaryBtn').className = 'profile-btn';
+            document.getElementById('secondaryBtn').className = 'profile-btn active';
+            loadProfiles();
+        };
+        
+        // Sliders update live
+        document.getElementById('vertSlider').oninput = updateLabels;
+        document.getElementById('leftSlider').oninput = updateLabels;
+        document.getElementById('rightSlider').oninput = updateLabels;
+        document.getElementById('sensSlider').oninput = updateLabels;
+        
+        // Save profiles
+        document.getElementById('saveBtn').onclick = async () => {
+            const profiles = {
+                primary: {
+                    v: parseInt(document.getElementById('vertSlider').value),
+                    l: parseInt(document.getElementById('leftSlider').value),
+                    r: parseInt(document.getElementById('rightSlider').value),
+                    sens: parseFloat(document.getElementById('sensSlider').value)
+                },
+                secondary: {
+                    v: parseInt(document.getElementById('vertSlider').value),
+                    l: parseInt(document.getElementById('leftSlider').value),
+                    r: parseInt(document.getElementById('rightSlider').value),
+                    sens: parseFloat(document.getElementById('sensSlider').value)
+                }
+            };
+            
+            await fetch('/api/profiles', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(profiles)
+            });
+            
+            document.getElementById('stats').innerHTML = '✅ Saved at ' + new Date().toLocaleTimeString();
+        };
+        
+        // Validate key
+        document.getElementById('validateBtn').onclick = async () => {
+            const key = document.getElementById('keyInput').value;
+            const res = await fetch('/api/validate-key', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({key: key})
+            });
+            const data = await res.json();
+            
+            const msg = document.getElementById('keyMessage');
+            if (data.valid) {
+                msg.innerHTML = '✅ ' + data.message;
+                msg.style.color = '#00ff00';
+                validated = true;
+            } else {
+                msg.innerHTML = '❌ ' + data.message;
+                msg.style.color = '#ff5555';
+            }
+        };
+        
+        // Server status
+        setInterval(async () => {
+            try {
+                await fetch('/api/profiles');
+                document.getElementById('serverStatus').innerHTML = '✅ Server Online';
+                document.getElementById('serverStatus').style.color = '#00ff00';
+            } catch {
+                document.getElementById('serverStatus').innerHTML = '❌ Server Offline';
+                document.getElementById('serverStatus').style.color = '#ff5555';
+            }
+        }, 5000);
+        
+        // Initial load
+        loadProfiles();
+        updateLabels();
+    </script>
+</body>
+</html>
