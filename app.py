@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ATLAS R6-SCRIPT - CLOUD SERVER WITH DAY KEY + 2 MIN TEST KEY
+ATLAS R6-SCRIPT - CLOUD SERVER WITH ACTIVATION-BASED TIMER
 """
 
 import os
@@ -37,11 +37,11 @@ def load_keys():
         if os.path.exists(KEY_FILE):
             with open(KEY_FILE, 'r') as f:
                 KEYS = json.load(f)
-            print(f"✅ Loaded {len(KEYS)} keys")
+            print("Loaded {} keys".format(len(KEYS)))
         else:
             create_default_keys()
     except Exception as e:
-        print(f"❌ Error loading keys: {e}")
+        print("Error loading keys: {}".format(e))
         KEYS = {}
 
 def save_keys():
@@ -59,11 +59,11 @@ def load_profiles():
         if os.path.exists(PROFILES_FILE):
             with open(PROFILES_FILE, 'r') as f:
                 USER_PROFILES = json.load(f)
-            print(f"✅ Loaded profiles for {len(USER_PROFILES)} users")
+            print("Loaded profiles for {} users".format(len(USER_PROFILES)))
         else:
             USER_PROFILES = {}
     except Exception as e:
-        print(f"❌ Error loading profiles: {e}")
+        print("Error loading profiles: {}".format(e))
         USER_PROFILES = {}
 
 def save_profiles():
@@ -73,37 +73,12 @@ def save_profiles():
             json.dump(USER_PROFILES, f, indent=2)
         return True
     except Exception as e:
-        print(f"❌ Error saving profiles: {e}")
+        print("Error saving profiles: {}".format(e))
         return False
 
 def create_default_keys():
     global KEYS
-    KEYS = {
-        # 7 Day Key
-        "7D21-9A4F-8E67-3B2C-1D5F-9A8E": {
-            "expiry": (datetime.now() + timedelta(days=7)).isoformat(),
-            "used": False,
-            "hwid": None,
-            "created": datetime.now().isoformat(),
-            "duration": "7days"
-        },
-        # 30 Day Key
-        "30D1-8C4F-2E7B-9A3D-5F6C-1B9E": {
-            "expiry": (datetime.now() + timedelta(days=30)).isoformat(),
-            "used": False,
-            "hwid": None,
-            "created": datetime.now().isoformat(),
-            "duration": "30days"
-        },
-        # 1 Year Key
-        "365D-1A2B-3C4D-5E6F-7A8B-9C0D": {
-            "expiry": (datetime.now() + timedelta(days=365)).isoformat(),
-            "used": False,
-            "hwid": None,
-            "created": datetime.now().isoformat(),
-            "duration": "365days"
-        }
-    }
+    KEYS = {}
     save_keys()
 
 # Load data on startup
@@ -150,24 +125,58 @@ def validate_key():
         return jsonify({'valid': False, 'message': 'Invalid key'})
     
     key_data = KEYS[key]
-    expiry = datetime.fromisoformat(key_data['expiry'])
     
-    if expiry < datetime.now():
-        return jsonify({'valid': False, 'message': 'Key expired'})
+    # Check if key is already used and activated
+    if key_data.get('used', False):
+        # Key is used - check if it's expired
+        if 'expiry' in key_data:
+            expiry = datetime.fromisoformat(key_data['expiry'])
+            if expiry < datetime.now():
+                return jsonify({'valid': False, 'message': 'Key expired'})
+        
+        # Check if it's bound to a different HWID
+        if key_data.get('hwid') and key_data['hwid'] != hwid:
+            return jsonify({'valid': False, 'message': 'Key already in use on another PC'})
+        
+        # Key is valid and belongs to this HWID
+        return jsonify({
+            'valid': True,
+            'message': 'Key valid',
+            'expiry': key_data['expiry']
+        })
     
-    if key_data['used'] and key_data['hwid'] != hwid:
-        return jsonify({'valid': False, 'message': 'Key already in use'})
+    # Key is unused - THIS IS THE FIRST ACTIVATION
+    # Calculate expiry based on duration from creation date
+    created = datetime.fromisoformat(key_data['created'])
+    duration = key_data.get('duration', '7days')
     
-    if not key_data['used']:
-        key_data['used'] = True
-        key_data['hwid'] = hwid
-        key_data['activated_date'] = datetime.now().isoformat()
-        key_data['activation_count'] = key_data.get('activation_count', 0) + 1
-        save_keys()
+    if duration == '2min':
+        expiry = datetime.now() + timedelta(minutes=2)
+    elif duration == '1day':
+        expiry = datetime.now() + timedelta(days=1)
+    elif duration == '7days':
+        expiry = datetime.now() + timedelta(days=7)
+    elif duration == '30days':
+        expiry = datetime.now() + timedelta(days=30)
+    elif duration == '365days':
+        expiry = datetime.now() + timedelta(days=365)
+    else:
+        expiry = datetime.now() + timedelta(days=7)
+    
+    # Mark key as used and set activation details
+    key_data['used'] = True
+    key_data['hwid'] = hwid
+    key_data['activated_date'] = datetime.now().isoformat()
+    key_data['expiry'] = expiry.isoformat()
+    key_data['activation_count'] = key_data.get('activation_count', 0) + 1
+    
+    save_keys()
+    
+    print("Key {} activated - expires {}".format(key, expiry.isoformat()))
     
     return jsonify({
         'valid': True,
-        'message': 'Key valid',
+        'message': 'Key activated successfully!',
         'expiry': key_data['expiry']
     })
 
@@ -235,7 +244,7 @@ def login():
             <html>
             <head><title>Login Failed</title></head>
             <body style="background:#0a0f1e; color:#ff0000; font-family:monospace; padding:20px;">
-                <h1>❌ Login Failed</h1>
+                <h1> Login Failed</h1>
                 <a href="/login" style="color:#00ffff;">Try again</a>
             </body>
             </html>
@@ -299,7 +308,7 @@ def login():
     </head>
     <body>
         <div class="login-box">
-            <h1>🔐 ATLAS ADMIN</h1>
+            <h1> ATLAS ADMIN</h1>
             <form method="POST">
                 <input type="text" name="username" placeholder="Username" required>
                 <input type="password" name="password" placeholder="Password" required>
@@ -342,28 +351,17 @@ def admin_generate_keys():
     
     new_keys = []
     
-    # Set expiry based on duration
-    if duration == '2min':
-        expiry = (datetime.now() + timedelta(minutes=2)).isoformat()
-    elif duration == '1day':
-        expiry = (datetime.now() + timedelta(days=1)).isoformat()
-    elif duration == '7days':
-        expiry = (datetime.now() + timedelta(days=7)).isoformat()
-    elif duration == '30days':
-        expiry = (datetime.now() + timedelta(days=30)).isoformat()
-    elif duration == '365days':
-        expiry = (datetime.now() + timedelta(days=365)).isoformat()
-    else:
-        expiry = (datetime.now() + timedelta(days=7)).isoformat()
+    # Keys are created with NO expiry yet - timer starts on activation
+    created_time = datetime.now().isoformat()
     
     for i in range(count):
         key = '-'.join([secrets.token_hex(2).upper() for _ in range(6)])
         KEYS[key] = {
-            'expiry': expiry,
             'used': False,
             'hwid': None,
-            'created': datetime.now().isoformat(),
-            'duration': duration
+            'created': created_time,
+            'duration': duration,
+            'expiry': None  # No expiry until activated
         }
         new_keys.append(key)
     
@@ -395,7 +393,7 @@ def admin_reset_all():
     
     return jsonify({
         'success': True,
-        'message': f'All {count} keys have been deleted'
+        'message': 'All {} keys have been deleted'.format(count)
     })
 
 @app.route('/admin/api/reset-expired', methods=['POST'])
@@ -406,19 +404,20 @@ def admin_reset_expired():
     expired = []
     
     for key, data in list(KEYS.items()):
-        try:
-            expiry = datetime.fromisoformat(data['expiry'])
-            if expiry < now:
-                expired.append(key)
-                del KEYS[key]
-        except:
-            pass
+        if data.get('expiry'):
+            try:
+                expiry = datetime.fromisoformat(data['expiry'])
+                if expiry < now:
+                    expired.append(key)
+                    del KEYS[key]
+            except:
+                pass
     
     save_keys()
     
     return jsonify({
         'success': True,
-        'message': f'Deleted {len(expired)} expired keys',
+        'message': 'Deleted {} expired keys'.format(len(expired)),
         'count': len(expired)
     })
 
@@ -427,7 +426,18 @@ def admin_reset_expired():
 def admin_stats():
     total = len(KEYS)
     used = sum(1 for k in KEYS if KEYS[k].get('used', False))
-    expired = sum(1 for k in KEYS if datetime.fromisoformat(KEYS[k]['expiry']) < datetime.now())
+    
+    # Count expired keys (only those that have been activated and expired)
+    now = datetime.now()
+    expired = 0
+    for key, data in KEYS.items():
+        if data.get('expiry'):
+            try:
+                expiry = datetime.fromisoformat(data['expiry'])
+                if expiry < now:
+                    expired += 1
+            except:
+                pass
     
     # Count by duration
     duration_counts = {}
@@ -444,7 +454,7 @@ def admin_stats():
     })
 
 # ============================================================================
-# ADMIN HTML - UPDATED WITH NEW KEY TYPES
+# ADMIN HTML - UPDATED WITH ACTIVATION INFO
 # ============================================================================
 
 ADMIN_HTML = """
@@ -471,6 +481,14 @@ ADMIN_HTML = """
             align-items: center;
         }
         h1 { color:#00ffff; }
+        .info-box {
+            background: rgba(255,255,0,0.1);
+            border: 1px solid #ffff00;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+            color: #ffff00;
+        }
         .stats { 
             display: grid;
             grid-template-columns: repeat(5,1fr);
@@ -543,13 +561,18 @@ ADMIN_HTML = """
         .key-item:hover {
             background: rgba(0,255,255,0.1);
         }
-        .key-item.test-key {
+        .key-item.unused {
+            border-left: 4px solid #00ff00;
+            background: rgba(0,255,0,0.05);
+        }
+        .key-item.used {
             border-left: 4px solid #ffaa00;
             background: rgba(255,170,0,0.05);
         }
-        .key-item.day-key {
-            border-left: 4px solid #00ff00;
-            background: rgba(0,255,0,0.05);
+        .key-item.expired {
+            border-left: 4px solid #ff0000;
+            background: rgba(255,0,0,0.05);
+            opacity: 0.7;
         }
         .badge {
             display: inline-block;
@@ -559,6 +582,9 @@ ADMIN_HTML = """
             font-weight: bold;
             margin-left: 10px;
         }
+        .badge.unused { background: #00ff00; color: #000; }
+        .badge.used { background: #ffaa00; color: #000; }
+        .badge.expired { background: #ff0000; color: #fff; }
         .badge.test { background: #ffaa00; color: #000; }
         .badge.day { background: #00ff00; color: #000; }
         .badge.week { background: #00ffff; color: #000; }
@@ -587,28 +613,20 @@ ADMIN_HTML = """
             gap: 10px;
             align-items: center;
         }
-        .duration-stats {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            margin-top: 10px;
-        }
-        .duration-badge {
-            padding: 5px 10px;
-            border-radius: 20px;
-            font-size: 12px;
-            font-weight: bold;
-        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🔑 ATLAS KEY ADMIN</h1>
+            <h1>ATLAS KEY ADMIN</h1>
             <div>
-                <span style="color:#00ffff; margin-right:15px;">2min test keys now available!</span>
+                <span style="color:#00ffff; margin-right:15px;">Timer starts on FIRST activation!</span>
                 <a href="/logout" class="logout-btn">Logout</a>
             </div>
+        </div>
+        
+        <div class="info-box">
+            ⏱️ <strong>NEW:</strong> Keys now only start counting down when FIRST activated by a user!
         </div>
         
         <div class="stats" id="stats">
@@ -620,30 +638,30 @@ ADMIN_HTML = """
         </div>
         
         <div class="panel">
-            <h2>⚡ Generate Keys</h2>
+            <h2>Generate Keys</h2>
             <input type="number" id="count" value="5" min="1" max="100">
             <select id="duration">
-                <option value="2min">⏱️ 2 Minutes (TEST KEY)</option>
-                <option value="1day">📅 1 Day</option>
-                <option value="7days">📅 7 Days</option>
-                <option value="30days">📅 30 Days</option>
-                <option value="365days">📅 1 Year</option>
+                <option value="2min"> 2 Minutes (TEST KEY - starts on activation)</option>
+                <option value="1day"> 1 Day (starts on activation)</option>
+                <option value="7days"> 7 Days (starts on activation)</option>
+                <option value="30days"> 30 Days (starts on activation)</option>
+                <option value="365days"> 1 Year (starts on activation)</option>
             </select>
             <button onclick="generateKeys()">Generate Keys</button>
             <div id="generated" class="generated" style="display:none;"></div>
         </div>
         
         <div class="panel">
-            <h2>🔧 Maintenance</h2>
+            <h2>Maintenance</h2>
             <div class="flex-row">
-                <button class="warning" onclick="resetExpired()">🗑️ Delete Expired Keys</button>
-                <button class="danger" onclick="resetAllKeys()">⚠️ DELETE ALL KEYS</button>
+                <button class="warning" onclick="resetExpired()"> Delete Expired Keys</button>
+                <button class="danger" onclick="resetAllKeys()"> DELETE ALL KEYS</button>
             </div>
             <p style="color:#a0b0c0; margin-top:10px;">Use "DELETE ALL" with caution - requires confirmation</p>
         </div>
         
         <div class="panel">
-            <h2>📋 All Keys <span style="color:#a0b0c0; font-size:14px;" id="keyCount"></span></h2>
+            <h2>All Keys <span style="color:#a0b0c0; font-size:14px;" id="keyCount"></span></h2>
             <div class="key-list" id="keyList"></div>
         </div>
     </div>
@@ -677,23 +695,49 @@ ADMIN_HTML = """
                 
                 Object.entries(keys).sort((a,b) => new Date(b[1].created) - new Date(a[1].created)).forEach(([key, data]) => {
                     const div = document.createElement('div');
-                    div.className = 'key-item';
                     
-                    // Add class based on duration
-                    if (data.duration === '2min') div.classList.add('test-key');
-                    else if (data.duration === '1day') div.classList.add('day-key');
+                    // Determine status and class
+                    let status = 'UNUSED';
+                    let statusClass = 'unused';
+                    let expiryInfo = '';
                     
-                    const status = data.used ? 'USED' : 'AVAILABLE';
-                    const statusColor = data.used ? '#ffaa00' : '#00ff00';
-                    const expiryDate = new Date(data.expiry).toLocaleString();
+                    const now = new Date();
                     
-                    // Add badge
+                    if (data.used) {
+                        if (data.expiry) {
+                            const expiryDate = new Date(data.expiry);
+                            if (expiryDate < now) {
+                                status = 'EXPIRED';
+                                statusClass = 'expired';
+                                expiryInfo = ' | Expired: ' + expiryDate.toLocaleString();
+                            } else {
+                                status = 'ACTIVE';
+                                statusClass = 'used';
+                                const daysLeft = Math.round((expiryDate - now) / (1000 * 60 * 60 * 24));
+                                const hoursLeft = Math.round((expiryDate - now) / (1000 * 60 * 60));
+                                if (daysLeft > 0) {
+                                    expiryInfo = ' | ' + daysLeft + ' days left';
+                                } else {
+                                    expiryInfo = ' | ' + hoursLeft + ' hours left';
+                                }
+                            }
+                        } else {
+                            status = 'ACTIVE (no expiry?)';
+                            statusClass = 'used';
+                        }
+                    }
+                    
+                    div.className = 'key-item ' + statusClass;
+                    
+                    // Add duration badge
                     let badge = '';
-                    if (data.duration === '2min') badge = '<span class="badge test">2min TEST</span>';
-                    else if (data.duration === '1day') badge = '<span class="badge day">1 DAY</span>';
-                    else if (data.duration === '7days') badge = '<span class="badge week">7 DAYS</span>';
-                    else if (data.duration === '30days') badge = '<span class="badge month">30 DAYS</span>';
-                    else if (data.duration === '365days') badge = '<span class="badge year">1 YEAR</span>';
+                    if (data.duration === '2min') badge = '<span class="badge test">2min</span>';
+                    else if (data.duration === '1day') badge = '<span class="badge day">1d</span>';
+                    else if (data.duration === '7days') badge = '<span class="badge week">7d</span>';
+                    else if (data.duration === '30days') badge = '<span class="badge month">30d</span>';
+                    else if (data.duration === '365days') badge = '<span class="badge year">365d</span>';
+                    
+                    const createdDate = new Date(data.created).toLocaleDateString();
                     
                     div.innerHTML = `
                         <div>
@@ -701,10 +745,12 @@ ADMIN_HTML = """
                                 ${key} ${badge}
                             </div>
                             <div style="margin-top:5px;">
-                                <span style="color:${statusColor};">${status}</span>
-                                <span style="color:#a0b0c0; margin-left:10px;">Exp: ${expiryDate}</span>
+                                <span style="color:${statusClass === 'unused' ? '#00ff00' : (statusClass === 'expired' ? '#ff0000' : '#ffaa00')};">${status}</span>
+                                <span style="color:#a0b0c0; margin-left:10px;">Created: ${createdDate}</span>
+                                ${expiryInfo ? `<span style="color:#ffaa00;">${expiryInfo}</span>` : ''}
                             </div>
                             ${data.hwid ? `<div style="color:#ffaa00; font-size:11px;">HWID: ${data.hwid.substring(0,16)}...</div>` : ''}
+                            ${data.activated_date ? `<div style="color:#a0b0c0; font-size:11px;">Activated: ${new Date(data.activated_date).toLocaleDateString()}</div>` : ''}
                         </div>
                         <button onclick="deleteKey('${key}')" style="background:#ff6464;">Delete</button>
                     `;
@@ -740,7 +786,8 @@ ADMIN_HTML = """
                 else if (duration === '30days') durationText = '30 DAY KEYS';
                 else if (duration === '365days') durationText = '1 YEAR KEYS';
                 
-                generatedDiv.innerHTML = '✅ Generated ' + data.keys.length + ' ' + durationText + ':<br>' + data.keys.join('<br>');
+                generatedDiv.innerHTML = 'Generated ' + data.keys.length + ' ' + durationText + ':<br>' + data.keys.join('<br>');
+                generatedDiv.innerHTML += '<br><br>⏱️ Timer will start when FIRST activated!';
                 
                 loadStats();
                 loadKeys();
@@ -773,7 +820,7 @@ ADMIN_HTML = """
                         headers: {'Content-Type': 'application/json'}
                     });
                     const data = await res.json();
-                    alert(`✅ Deleted ${data.count} expired keys`);
+                    alert(' Deleted ' + data.count + ' expired keys');
                     loadKeys();
                     loadStats();
                 } catch (e) {
@@ -793,17 +840,17 @@ ADMIN_HTML = """
                     });
                     const data = await res.json();
                     if (data.success) {
-                        alert(`✅ ${data.message}`);
+                        alert(' ' + data.message);
                         loadKeys();
                         loadStats();
                     } else {
-                        alert('❌ ' + data.message);
+                        alert(' ' + data.message);
                     }
                 } catch (e) {
                     console.error('Failed to reset all keys', e);
                 }
             } else {
-                alert('❌ Confirmation failed - no keys deleted');
+                alert(' Confirmation failed - no keys deleted');
             }
         }
         
@@ -827,14 +874,14 @@ ADMIN_HTML = """
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
-    print(f"\n{'='*50}")
-    print(f"🚀 ATLAS CLOUD SERVER")
-    print(f"{'='*50}")
-    print(f"🔑 Keys loaded: {len(KEYS)}")
-    print(f"📁 Profiles loaded: {len(USER_PROFILES)}")
-    print(f"👑 Admin login: https://atlas-r6-keys.onrender.com/login")
-    print(f"📊 Admin panel: https://atlas-r6-keys.onrender.com/admin")
-    print(f"⏱️  2min test keys: AVAILABLE")
-    print(f"📅 1 day keys: AVAILABLE")
-    print(f"{'='*50}\n")
+    print("\n" + "="*50)
+    print("ATLAS CLOUD SERVER")
+    print("="*50)
+    print("Keys loaded: {}".format(len(KEYS)))
+    print("Profiles loaded: {}".format(len(USER_PROFILES)))
+    print("Admin login: https://atlas-r6-keys.onrender.com/login")
+    print("Admin panel: https://atlas-r6-keys.onrender.com/admin")
+    print("2min test keys: AVAILABLE")
+    print("1 day keys: AVAILABLE")
+    print("="*50 + "\n")
     app.run(host='0.0.0.0', port=port)
