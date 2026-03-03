@@ -1,14 +1,7 @@
 #!/usr/bin/env python3
 """
-ATLAS R6-SCRIPT - INDESTRUCTIBLE CLOUD SERVER
-Features:
-- Multi-layer backup (Redis if available, JSON, timestamped backups)
-- Auto-save daemon (saves every 5 minutes)
-- Recovery on startup from any available source
-- Emergency recovery endpoints
-- Connection retry logic for Redis
-- 50 backup rotation
-- SAFE MODE: Runs perfectly even without Redis credentials
+ATLAS KEY SYSTEM - ENHANCED VERSION
+Features: Better UI, 1-day keys, improved validation, stats dashboard
 """
 
 import os
@@ -17,1218 +10,1082 @@ import secrets
 import hashlib
 import threading
 import time
-import shutil
-import glob
 from datetime import datetime, timedelta
-from flask import Flask, render_template, render_template_string, jsonify, request, session, redirect, url_for
+from flask import Flask, render_template, render_template_string, jsonify, request, session, redirect
 from flask_cors import CORS
 from functools import wraps
 
-# Only import redis if available (prevents crash if not installed)
-try:
-    import redis
-    REDIS_AVAILABLE = True
-except ImportError:
-    REDIS_AVAILABLE = False
-    print("⚠️ Redis module not installed - running in local-only mode")
-
-# ============================================================================
-# INIT
-# ============================================================================
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 CORS(app)
 
 # ============================================================================
-# REDIS MANAGER WITH SAFE FALLBACK (NO CRASH IF MISSING)
+# DATA STORAGE
 # ============================================================================
-class RedisManager:
-    def __init__(self):
-        self.client = None
-        self.enabled = False
-        if REDIS_AVAILABLE:
-            self.connect()
-        else:
-            print("⚠️ Redis not available - running in local-only mode")
-    
-    def connect(self):
-        """Establish Redis connection only if credentials exist"""
-        host = os.environ.get('UPSTASH_REDIS_HOST')
-        port = os.environ.get('UPSTASH_REDIS_PORT')
-        password = os.environ.get('UPSTASH_REDIS_PASSWORD')
-        
-        # Only try Redis if ALL credentials exist
-        if not all([host, port, password]):
-            print("⚠️ Redis credentials missing - running in local-only mode")
-            self.enabled = False
-            return
-        
-        try:
-            self.client = redis.Redis(
-                host=host,
-                port=int(port) if port else 6379,
-                password=password,
-                ssl=True,
-                decode_responses=True,
-                socket_connect_timeout=3,
-                socket_timeout=3,
-                retry_on_timeout=True
-            )
-            # Test connection
-            self.client.ping()
-            self.enabled = True
-            print("✅ Redis connected successfully")
-        except Exception as e:
-            print(f"⚠️ Redis connection failed: {e}")
-            print("⚠️ Running in local-only mode (keys saved to disk only)")
-            self.client = None
-            self.enabled = False
-    
-    def get_keys(self):
-        """Retrieve keys from Redis (if available)"""
-        if not self.enabled or not self.client:
-            return None
-        try:
-            data = self.client.get('atlas_keys')
-            return json.loads(data) if data else None
-        except Exception as e:
-            print(f"⚠️ Redis read failed: {e}")
-            return None
-    
-    def save_keys(self, keys_dict):
-        """Save keys to Redis (if available)"""
-        if not self.enabled or not self.client:
-            return False
-        try:
-            self.client.set('atlas_keys', json.dumps(keys_dict))
-            # Save hourly backup (30 day retention) - only if Redis is working
-            try:
-                self.client.setex(
-                    f'atlas_keys_backup_{datetime.now().strftime("%Y%m%d_%H")}',
-                    2592000,  # 30 days
-                    json.dumps(keys_dict)
-                )
-            except:
-                pass  # Non-critical if hourly backup fails
-            return True
-        except Exception as e:
-            print(f"⚠️ Redis save failed: {e}")
-            return False
-    
-    def get_profiles(self):
-        """Retrieve profiles from Redis"""
-        if not self.enabled or not self.client:
-            return None
-        try:
-            data = self.client.get('atlas_profiles')
-            return json.loads(data) if data else None
-        except:
-            return None
-    
-    def save_profiles(self, profiles_dict):
-        """Save profiles to Redis"""
-        if not self.enabled or not self.client:
-            return False
-        try:
-            self.client.set('atlas_profiles', json.dumps(profiles_dict))
-            return True
-        except:
-            return False
-
-# Initialize Redis manager (won't crash if Redis isn't available)
-redis_mgr = RedisManager()
-
-# ============================================================================
-# KEY DATABASE WITH MULTI-LAYER BACKUP
-# ============================================================================
-KEYS = {}
-KEY_FILE = 'keys.json'
-MAX_BACKUPS = 50  # Keep last 50 backups
-
-# ============================================================================
-# PROFILES DATABASE
-# ============================================================================
-USER_PROFILES = {}
+KEYS_FILE = 'keys.json'
 PROFILES_FILE = 'profiles.json'
+STATS_FILE = 'stats.json'
+
+KEYS = {}
+USER_PROFILES = {}
+STATS = {'validations': 0, 'generations': 0, 'last_reset': datetime.now().isoformat()}
+
+ADMIN_USER = "admin"
+ADMIN_PASS = os.environ.get('ADMIN_PASSWORD', 'atlas2024')
 
 # ============================================================================
-# AUTO-SAVE DAEMON (LAYER 2: AUTOMATIC BACKUPS)
+# LOAD/SAVE FUNCTIONS
 # ============================================================================
-def auto_save_daemon():
-    """Background thread that saves keys every 5 minutes"""
-    while True:
-        time.sleep(300)  # 5 minutes
-        if KEYS:  # Only save if we have keys
-            try:
-                save_keys_comprehensive()
-                print(f"💾 Auto-saved {len(KEYS)} keys at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            except Exception as e:
-                print(f"⚠️ Auto-save failed: {e}")
-
-# ============================================================================
-# COMPREHENSIVE SAVE FUNCTION (LAYER 3: MULTIPLE BACKUPS)
-# ============================================================================
-def save_keys_comprehensive():
-    """Save keys with multiple backup strategies"""
+def load_data():
+    global KEYS, USER_PROFILES, STATS
     try:
-        # 1. Primary JSON save
-        with open(KEY_FILE, 'w') as f:
+        if os.path.exists(KEYS_FILE):
+            with open(KEYS_FILE, 'r') as f:
+                KEYS = json.load(f)
+        if os.path.exists(PROFILES_FILE):
+            with open(PROFILES_FILE, 'r') as f:
+                USER_PROFILES = json.load(f)
+        if os.path.exists(STATS_FILE):
+            with open(STATS_FILE, 'r') as f:
+                STATS = json.load(f)
+    except Exception as e:
+        print(f"Load error: {e}")
+
+def save_data():
+    try:
+        with open(KEYS_FILE, 'w') as f:
             json.dump(KEYS, f, indent=2)
-        
-        # 2. Timestamped backup
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_file = f'keys_backup_{timestamp}.json'
-        shutil.copy2(KEY_FILE, backup_file)
-        
-        # 3. Clean old backups (keep only MAX_BACKUPS)
-        backups = sorted(glob.glob('keys_backup_*.json'))
-        while len(backups) > MAX_BACKUPS:
-            os.remove(backups.pop(0))
-        
-        # 4. Save to Redis (if available)
-        redis_mgr.save_keys(KEYS)
-        
-        # 5. Also save profiles
         with open(PROFILES_FILE, 'w') as f:
             json.dump(USER_PROFILES, f, indent=2)
-        
-        # 6. Save profiles to Redis
-        redis_mgr.save_profiles(USER_PROFILES)
-        
-        return True
+        with open(STATS_FILE, 'w') as f:
+            json.dump(STATS, f, indent=2)
     except Exception as e:
-        print(f"❌ Comprehensive save failed: {e}")
-        return False
+        print(f"Save error: {e}")
+
+# Auto-save every 2 minutes
+def auto_save():
+    while True:
+        time.sleep(120)
+        save_data()
+        print(f"[{datetime.now().strftime('%H:%M')}] Auto-saved")
+
+threading.Thread(target=auto_save, daemon=True).start()
+load_data()
 
 # ============================================================================
-# COMPREHENSIVE LOAD FUNCTION (LAYER 4: RECOVERY FROM ANY SOURCE)
+# KEY FUNCTIONS
 # ============================================================================
-def load_keys_comprehensive():
-    """Load keys from multiple sources with fallback"""
-    global KEYS, USER_PROFILES
+def generate_key(duration='7days'):
+    """Generate new key with specified duration"""
+    key = '-'.join([secrets.token_hex(2).upper() for _ in range(4)])
     
-    print("\n" + "="*50)
-    print("🔄 ATTEMPTING KEY RECOVERY...")
-    print("="*50)
+    duration_map = {
+        '1hour': timedelta(hours=1),
+        '1day': timedelta(days=1),
+        '7days': timedelta(days=7),
+        '30days': timedelta(days=30),
+        '365days': timedelta(days=365),
+        'lifetime': timedelta(days=9999)
+    }
     
-    # TRY SOURCE 1: REDIS (BEST, IF AVAILABLE)
-    print("\n1️⃣ Checking Redis...")
-    redis_keys = redis_mgr.get_keys()
-    if redis_keys:
-        KEYS = redis_keys
-        print(f"✅ SUCCESS! Loaded {len(KEYS)} keys from Redis")
-        # Also save locally
-        with open(KEY_FILE, 'w') as f:
-            json.dump(KEYS, f, indent=2)
-        
-        # Load profiles from Redis too
-        redis_profiles = redis_mgr.get_profiles()
-        if redis_profiles:
-            USER_PROFILES = redis_profiles
-            print(f"✅ Loaded {len(USER_PROFILES)} profiles from Redis")
-            with open(PROFILES_FILE, 'w') as f:
-                json.dump(USER_PROFILES, f, indent=2)
-        return True
+    expiry = datetime.now() + duration_map.get(duration, timedelta(days=7))
     
-    # TRY SOURCE 2: MAIN JSON FILE
-    print("\n2️⃣ Checking local keys.json...")
-    if os.path.exists(KEY_FILE):
-        try:
-            with open(KEY_FILE, 'r') as f:
-                KEYS = json.load(f)
-            print(f"✅ SUCCESS! Loaded {len(KEYS)} keys from keys.json")
-            
-            # Try to restore Redis (if available)
-            redis_mgr.save_keys(KEYS)
-            
-            # Load profiles
-            if os.path.exists(PROFILES_FILE):
-                with open(PROFILES_FILE, 'r') as f:
-                    USER_PROFILES = json.load(f)
-                print(f"✅ Loaded {len(USER_PROFILES)} profiles from profiles.json")
-                redis_mgr.save_profiles(USER_PROFILES)
-            return True
-        except Exception as e:
-            print(f"⚠️ Failed to load keys.json: {e}")
+    KEYS[key] = {
+        'created': datetime.now().isoformat(),
+        'duration': duration,
+        'expiry': expiry.isoformat(),
+        'used': False,
+        'hwid': None,
+        'activated': None,
+        'activations': 0
+    }
     
-    # TRY SOURCE 3: RECENT BACKUPS
-    print("\n3️⃣ Checking backup files...")
-    backups = sorted(glob.glob('keys_backup_*.json'))
-    if backups:
-        latest_backup = backups[-1]  # Most recent
-        try:
-            with open(latest_backup, 'r') as f:
-                KEYS = json.load(f)
-            print(f"✅ SUCCESS! Recovered {len(KEYS)} keys from: {latest_backup}")
-            
-            # Restore main file
-            with open(KEY_FILE, 'w') as f:
-                json.dump(KEYS, f, indent=2)
-            
-            # Restore Redis (if available)
-            redis_mgr.save_keys(KEYS)
-            return True
-        except Exception as e:
-            print(f"⚠️ Failed to load backup: {e}")
+    STATS['generations'] += 1
+    save_data()
+    return key
+
+def validate_key(key, hwid):
+    """Validate and activate key"""
+    key = key.strip().upper()
     
-    # TRY SOURCE 4: ENVIRONMENT VARIABLE (EMERGENCY)
-    print("\n4️⃣ Checking environment variables...")
-    env_keys = os.environ.get('INITIAL_KEYS_JSON')
-    if env_keys:
-        try:
-            KEYS = json.loads(env_keys)
-            print(f"✅ SUCCESS! Loaded {len(KEYS)} keys from environment")
-            save_keys_comprehensive()
-            return True
-        except:
-            pass
+    if key not in KEYS:
+        return {'valid': False, 'message': 'Invalid key'}
     
-    # EVERYTHING FAILED - START FRESH
-    print("\n⚠️ NO KEYS FOUND! Starting with empty database.")
-    KEYS = {}
-    USER_PROFILES = {}
-    return False
+    data = KEYS[key]
+    now = datetime.now()
+    expiry = datetime.fromisoformat(data['expiry'])
+    
+    # Check expiry
+    if expiry < now:
+        return {'valid': False, 'message': 'Key expired'}
+    
+    # Check if used by different HWID
+    if data['used'] and data['hwid'] and data['hwid'] != hwid:
+        return {'valid': False, 'message': 'Key in use on another device'}
+    
+    # First activation or reactivation
+    if not data['used']:
+        data['used'] = True
+        data['activated'] = now.isoformat()
+    
+    data['hwid'] = hwid
+    data['activations'] += 1
+    
+    STATS['validations'] += 1
+    save_data()
+    
+    days_left = (expiry - now).days
+    hours_left = (expiry - now).seconds // 3600
+    
+    return {
+        'valid': True,
+        'message': 'Key activated',
+        'expiry': data['expiry'],
+        'duration': data['duration'],
+        'days_left': days_left,
+        'hours_left': hours_left if days_left == 0 else None,
+        'activations': data['activations']
+    }
 
 # ============================================================================
-# START AUTO-SAVE DAEMON
-# ============================================================================
-auto_save_thread = threading.Thread(target=auto_save_daemon, daemon=True)
-auto_save_thread.start()
-print("✅ Auto-save daemon started (saves every 5 minutes)")
-
-# ============================================================================
-# LOAD DATA ON STARTUP
-# ============================================================================
-load_keys_comprehensive()
-
-# ============================================================================
-# LOGIN DECORATOR
-# ============================================================================
-ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD = "atlas2026"
-
-def login_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if not session.get('logged_in'):
-            return redirect(url_for('login'))
-        return f(*args, **kwargs)
-    return decorated_function
-
-# ============================================================================
-# PUBLIC ROUTES
+# ROUTES
 # ============================================================================
 
 @app.route('/')
 def home():
-    return "ATLAS Key Server Online!"
+    return render_template_string(INDEX_HTML)
 
 @app.route('/api/status')
 def status():
     return jsonify({
-        'status': 'online',
+        'online': True,
         'time': datetime.now().isoformat(),
-        'keys_loaded': len(KEYS),
-        'backups_available': len(glob.glob('keys_backup_*.json')),
-        'redis_enabled': redis_mgr.enabled
+        'keys_total': len(KEYS),
+        'keys_used': sum(1 for k in KEYS if KEYS[k].get('used')),
+        'validations': STATS.get('validations', 0)
     })
 
 @app.route('/api/validate', methods=['POST'])
-def validate_key():
+def api_validate():
     data = request.json
-    key = data.get('key', '').strip().upper()
-    hwid = data.get('hwid', '')
-    
-    # Quick Redis sync before validation (get latest from other instances)
-    redis_keys = redis_mgr.get_keys()
-    if redis_keys:
-        KEYS.update(redis_keys)
-    
-    if key not in KEYS:
-        return jsonify({'valid': False, 'message': 'Invalid key'})
-    
-    key_data = KEYS[key]
-    
-    # Check if key is already used and activated
-    if key_data.get('used', False):
-        # Key is used - check if it's expired
-        if 'expiry' in key_data:
-            expiry = datetime.fromisoformat(key_data['expiry'])
-            if expiry < datetime.now():
-                return jsonify({'valid': False, 'message': 'Key expired'})
-        
-        # Check if it's bound to a different HWID
-        if key_data.get('hwid') and key_data['hwid'] != hwid:
-            return jsonify({'valid': False, 'message': 'Key already in use on another PC'})
-        
-        return jsonify({
-            'valid': True,
-            'message': 'Key valid',
-            'expiry': key_data['expiry']
-        })
-    
-    # Key is unused - FIRST ACTIVATION
-    created = datetime.fromisoformat(key_data['created'])
-    duration = key_data.get('duration', '7days')
-    
-    if duration == '2min':
-        expiry = datetime.now() + timedelta(minutes=2)
-    elif duration == '1day':
-        expiry = datetime.now() + timedelta(days=1)
-    elif duration == '7days':
-        expiry = datetime.now() + timedelta(days=7)
-    elif duration == '30days':
-        expiry = datetime.now() + timedelta(days=30)
-    elif duration == '365days':
-        expiry = datetime.now() + timedelta(days=365)
-    else:
-        expiry = datetime.now() + timedelta(days=7)
-    
-    key_data['used'] = True
-    key_data['hwid'] = hwid
-    key_data['activated_date'] = datetime.now().isoformat()
-    key_data['expiry'] = expiry.isoformat()
-    key_data['activation_count'] = key_data.get('activation_count', 0) + 1
-    
-    save_keys_comprehensive()
-    
-    print(f"🔑 Key {key} activated - expires {expiry.isoformat()}")
-    
-    return jsonify({
-        'valid': True,
-        'message': 'Key activated successfully!',
-        'expiry': key_data['expiry']
-    })
-
-# ============================================================================
-# PROFILE API WITH BACKUP
-# ============================================================================
+    key = data.get('key', '')
+    hwid = data.get('hwid', 'unknown')
+    return jsonify(validate_key(key, hwid))
 
 @app.route('/api/profiles/<hwid>', methods=['GET'])
 def get_profiles(hwid):
-    if hwid in USER_PROFILES:
-        return jsonify(USER_PROFILES[hwid])
-    return jsonify({})
+    return jsonify(USER_PROFILES.get(hwid, {}))
 
-@app.route('/api/profiles/<hwid>/save', methods=['POST'])
-def save_profile(hwid):
+@app.route('/api/profiles/<hwid>', methods=['POST'])
+def save_profiles(hwid):
     data = request.json
-    name = data.get('name')
-    profile_data = data.get('data')
-    
-    if not name or not profile_data:
-        return jsonify({'success': False, 'error': 'Missing data'}), 400
-    
-    if hwid not in USER_PROFILES:
-        USER_PROFILES[hwid] = {}
-    
-    USER_PROFILES[hwid][name] = {
-        'data': profile_data,
-        'created': datetime.now().isoformat(),
-        'updated': datetime.now().isoformat()
-    }
-    
-    save_keys_comprehensive()  # This saves profiles too
+    USER_PROFILES[hwid] = data
+    save_data()
     return jsonify({'success': True})
-
-@app.route('/api/profiles/<hwid>/delete', methods=['POST'])
-def delete_profile(hwid):
-    data = request.json
-    name = data.get('name')
-    
-    if hwid in USER_PROFILES and name in USER_PROFILES[hwid]:
-        del USER_PROFILES[hwid][name]
-        save_keys_comprehensive()
-        return jsonify({'success': True})
-    
-    return jsonify({'success': False}), 404
-
-# ============================================================================
-# ADMIN LOGIN ROUTES
-# ============================================================================
-
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        
-        if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
-            session['logged_in'] = True
-            return redirect(url_for('admin_panel'))
-        else:
-            return '''
-            <html>
-            <head><title>Login Failed</title></head>
-            <body style="background:#0a0f1e; color:#ff0000; font-family:monospace; padding:20px;">
-                <h1>❌ Login Failed</h1>
-                <a href="/login" style="color:#00ffff;">Try again</a>
-            </body>
-            </html>
-            '''
-    
-    # Login form
-    return '''
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>ATLAS Admin Login</title>
-        <style>
-            * { margin:0; padding:0; box-sizing:border-box; font-family:monospace; }
-            body { 
-                background: linear-gradient(135deg, #0a0f1e 0%, #001520 100%);
-                min-height: 100vh;
-                display: flex;
-                justify-content: center;
-                align-items: center;
-            }
-            .login-box { 
-                background: rgba(10, 20, 30, 0.98);
-                border: 2px solid #00ffff;
-                border-radius: 10px;
-                padding: 40px;
-                width: 400px;
-                box-shadow: 0 0 50px rgba(0, 255, 255, 0.5);
-            }
-            h1 { 
-                color: #00ffff;
-                text-align: center;
-                margin-bottom: 30px;
-            }
-            input { 
-                width: 100%;
-                padding: 12px;
-                margin: 10px 0;
-                background: #1a2a30;
-                border: 1px solid #00ffff;
-                color: #00ffff;
-                border-radius: 4px;
-                font-size: 16px;
-            }
-            button { 
-                width: 100%;
-                padding: 12px;
-                background: #00ffff;
-                color: #0a0f1e;
-                border: none;
-                border-radius: 4px;
-                font-size: 18px;
-                font-weight: bold;
-                cursor: pointer;
-                margin-top: 20px;
-            }
-            button:hover {
-                background: #ffffff;
-                box-shadow: 0 0 20px #00ffff;
-            }
-        </style>
-    </head>
-    <body>
-        <div class="login-box">
-            <h1>🔐 ATLAS ADMIN</h1>
-            <form method="POST">
-                <input type="text" name="username" placeholder="Username" required>
-                <input type="password" name="password" placeholder="Password" required>
-                <button type="submit">Login</button>
-            </form>
-        </div>
-    </body>
-    </html>
-    '''
-
-@app.route('/logout')
-def logout():
-    session.pop('logged_in', None)
-    return redirect(url_for('login'))
 
 # ============================================================================
 # ADMIN PANEL
 # ============================================================================
 
 @app.route('/admin')
-@login_required
-def admin_panel():
+def admin_login():
+    auth = request.authorization
+    if not auth or auth.username != ADMIN_USER or auth.password != ADMIN_PASS:
+        return ('Admin Access Required', 401, {
+            'WWW-Authenticate': 'Basic realm="ATLAS Admin"'
+        })
     return render_template_string(ADMIN_HTML)
 
-# ============================================================================
-# ADMIN API
-# ============================================================================
-
-@app.route('/admin/api/keys', methods=['GET'])
-@login_required
-def admin_get_keys():
-    return jsonify(KEYS)
-
-@app.route('/admin/api/backups', methods=['GET'])
-@login_required
-def list_backups():
-    """List all available backup files"""
-    backups = sorted(glob.glob('keys_backup_*.json'))
-    backup_info = []
-    for backup in backups:
-        try:
-            with open(backup, 'r') as f:
-                data = json.load(f)
-            backup_info.append({
-                'filename': backup,
-                'date': backup.replace('keys_backup_', '').replace('.json', ''),
-                'key_count': len(data),
-                'size': os.path.getsize(backup)
-            })
-        except:
-            pass
-    return jsonify(backups=backup_info)
-
-@app.route('/admin/api/recover', methods=['POST'])
-@login_required
-def admin_recover():
-    """Emergency recovery from specific backup"""
-    global KEYS
-    data = request.json
-    backup_file = data.get('backup_file')
-    
-    if backup_file and os.path.exists(backup_file):
-        try:
-            with open(backup_file, 'r') as f:
-                KEYS = json.load(f)
-            save_keys_comprehensive()
-            return jsonify({
-                'success': True,
-                'message': f'Recovered {len(KEYS)} keys from {backup_file}'
-            })
-        except Exception as e:
-            return jsonify({'success': False, 'error': str(e)}), 500
-    
-    # If no file specified, try Redis
-    redis_keys = redis_mgr.get_keys()
-    if redis_keys:
-        KEYS = redis_keys
-        save_keys_comprehensive()
-        return jsonify({
-            'success': True,
-            'message': f'Recovered {len(KEYS)} keys from Redis'
-        })
-    
-    return jsonify({'success': False, 'error': 'No recovery source found'}), 404
-
-@app.route('/admin/api/generate', methods=['POST'])
-@login_required
-def admin_generate_keys():
-    data = request.json
-    count = int(data.get('count', 5))
-    duration = data.get('duration', '7days')
-    
-    new_keys = []
-    created_time = datetime.now().isoformat()
-    
-    for i in range(count):
-        key = '-'.join([secrets.token_hex(2).upper() for _ in range(6)])
-        KEYS[key] = {
-            'used': False,
-            'hwid': None,
-            'created': created_time,
-            'duration': duration,
-            'expiry': None
-        }
-        new_keys.append(key)
-    
-    save_keys_comprehensive()
-    return jsonify({'success': True, 'keys': new_keys})
-
-@app.route('/admin/api/delete/<key>', methods=['DELETE'])
-@login_required
-def admin_delete_key(key):
-    if key in KEYS:
-        del KEYS[key]
-        save_keys_comprehensive()
-        return jsonify({'success': True})
-    return jsonify({'success': False}), 404
-
-@app.route('/admin/api/reset-all', methods=['POST'])
-@login_required
-def admin_reset_all():
-    """Reset ALL keys - emergency use"""
-    data = request.json
-    confirm = data.get('confirm', '')
-    
-    if confirm != 'DELETE ALL':
-        return jsonify({'success': False, 'message': 'Confirmation required'}), 400
-    
-    count = len(KEYS)
-    KEYS.clear()
-    save_keys_comprehensive()
-    
-    return jsonify({
-        'success': True,
-        'message': 'All {} keys have been deleted'.format(count)
-    })
-
-@app.route('/admin/api/reset-expired', methods=['POST'])
-@login_required
-def admin_reset_expired():
-    """Delete all expired keys"""
-    now = datetime.now()
-    expired = []
-    
-    for key, data in list(KEYS.items()):
-        if data.get('expiry'):
-            try:
-                expiry = datetime.fromisoformat(data['expiry'])
-                if expiry < now:
-                    expired.append(key)
-                    del KEYS[key]
-            except:
-                pass
-    
-    save_keys_comprehensive()
-    
-    return jsonify({
-        'success': True,
-        'message': 'Deleted {} expired keys'.format(len(expired)),
-        'count': len(expired)
-    })
-
-@app.route('/admin/api/stats', methods=['GET'])
-@login_required
+@app.route('/admin/api/stats')
 def admin_stats():
-    total = len(KEYS)
-    used = sum(1 for k in KEYS if KEYS[k].get('used', False))
+    auth = request.authorization
+    if not auth or auth.username != ADMIN_USER or auth.password != ADMIN_PASS:
+        return jsonify({'error': 'Unauthorized'}), 401
     
     now = datetime.now()
     expired = 0
-    for key, data in KEYS.items():
-        if data.get('expiry'):
-            try:
-                expiry = datetime.fromisoformat(data['expiry'])
-                if expiry < now:
-                    expired += 1
-            except:
-                pass
-    
-    duration_counts = {}
-    for key, data in KEYS.items():
-        dur = data.get('duration', 'unknown')
-        duration_counts[dur] = duration_counts.get(dur, 0) + 1
+    for k, v in KEYS.items():
+        if datetime.fromisoformat(v['expiry']) < now:
+            expired += 1
     
     return jsonify({
-        'total': total,
-        'used': used,
-        'available': total - used,
+        'total': len(KEYS),
+        'used': sum(1 for k in KEYS if KEYS[k].get('used')),
+        'available': len(KEYS) - sum(1 for k in KEYS if KEYS[k].get('used')),
         'expired': expired,
-        'duration_counts': duration_counts,
-        'redis_enabled': redis_mgr.enabled,
-        'backups': len(glob.glob('keys_backup_*.json'))
+        'validations': STATS.get('validations', 0),
+        'generations': STATS.get('generations', 0)
     })
 
+@app.route('/admin/api/keys', methods=['GET'])
+def admin_get_keys():
+    auth = request.authorization
+    if not auth or auth.username != ADMIN_USER or auth.password != ADMIN_PASS:
+        return jsonify({'error': 'Unauthorized'}), 401
+    return jsonify(KEYS)
+
+@app.route('/admin/api/generate', methods=['POST'])
+def admin_generate():
+    auth = request.authorization
+    if not auth or auth.username != ADMIN_USER or auth.password != ADMIN_PASS:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    data = request.json
+    count = min(int(data.get('count', 1)), 100)
+    duration = data.get('duration', '7days')
+    
+    new_keys = [generate_key(duration) for _ in range(count)]
+    return jsonify({'success': True, 'keys': new_keys, 'duration': duration})
+
+@app.route('/admin/api/delete/<key>', methods=['DELETE'])
+def admin_delete(key):
+    auth = request.authorization
+    if not auth or auth.username != ADMIN_USER or auth.password != ADMIN_PASS:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    if key in KEYS:
+        del KEYS[key]
+        save_data()
+        return jsonify({'success': True})
+    return jsonify({'success': False}), 404
+
 # ============================================================================
-# ADMIN HTML - UPDATED WITH BACKUP INFO
+# MODERN UI TEMPLATES
 # ============================================================================
 
-ADMIN_HTML = """
+INDEX_HTML = """
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>ATLAS Admin - INDESTRUCTIBLE</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ATLAS | Key System</title>
     <style>
-        * { margin:0; padding:0; box-sizing:border-box; font-family:monospace; }
-        body { 
-            background: linear-gradient(135deg, #0a0f1e 0%, #001520 100%);
-            padding:20px;
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        }
+
+        :root {
+            --primary: #6366f1;
+            --primary-dark: #4f46e5;
+            --bg: #0a0a0f;
+            --surface: #141418;
+            --surface-hover: #1a1a20;
+            --text: #f1f1f4;
+            --text-muted: #6b6b7b;
+            --success: #22c55e;
+            --error: #ef4444;
+            --warning: #f59e0b;
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
             min-height: 100vh;
-        }
-        .container { max-width:1200px; margin:0 auto; }
-        .header { 
-            background: rgba(0,255,255,0.1);
-            border: 2px solid #00ffff;
-            border-radius: 10px;
-            padding: 20px;
-            margin-bottom: 20px;
             display: flex;
-            justify-content: space-between;
+            justify-content: center;
             align-items: center;
-        }
-        h1 { color:#00ffff; }
-        .info-box {
-            background: rgba(255,255,0,0.1);
-            border: 1px solid #ffff00;
-            border-radius: 8px;
-            padding: 15px;
-            margin-bottom: 20px;
-            color: #ffff00;
-        }
-        .stats { 
-            display: grid;
-            grid-template-columns: repeat(6,1fr);
-            gap: 15px;
-            margin-bottom: 20px;
-        }
-        .stat-card { 
-            background: rgba(0,255,255,0.05);
-            border: 1px solid #00ffff;
-            border-radius: 8px;
             padding: 20px;
-            text-align: center;
+            line-height: 1.6;
         }
-        .stat-value { 
-            color:#00ffff; 
-            font-size:32px; 
-            font-weight:bold;
-        }
-        .panel { 
-            background: rgba(0,0,0,0.5);
-            border: 1px solid #00ffff;
-            border-radius: 8px;
-            padding: 20px;
-            margin-bottom: 20px;
-        }
-        h2 { color:#00ffff; margin-bottom: 15px; }
-        input, select { 
+
+        .container {
             width: 100%;
-            padding: 10px;
-            margin: 10px 0;
-            background: #1a2a30;
-            border: 1px solid #00ffff;
-            color: #00ffff;
-            border-radius: 4px;
+            max-width: 480px;
+            background: var(--surface);
+            border-radius: 24px;
+            border: 1px solid rgba(255,255,255,0.06);
+            overflow: hidden;
+            box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5);
         }
-        button { 
-            background: #00ffff;
-            color: #0a0f1e;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-weight: bold;
-            margin: 5px;
+
+        .header {
+            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+            padding: 40px 30px;
+            text-align: center;
+            position: relative;
         }
-        button:hover {
-            background: #ffffff;
-            box-shadow: 0 0 20px #00ffff;
+
+        .header::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
         }
-        button.danger {
-            background: #ff6464;
+
+        .logo {
+            font-size: 32px;
+            font-weight: 800;
+            letter-spacing: 4px;
+            margin-bottom: 8px;
         }
-        button.warning {
-            background: #ffaa00;
+
+        .tagline {
+            font-size: 12px;
+            opacity: 0.8;
+            letter-spacing: 2px;
+            text-transform: uppercase;
         }
-        button.success {
-            background: #00ff00;
-            color: #000;
+
+        .content {
+            padding: 30px;
         }
-        .key-list { 
-            max-height:400px; 
-            overflow-y:auto; 
-            border:1px solid #00ffff40;
-            border-radius: 4px;
-        }
-        .key-item { 
-            display:flex; 
-            justify-content:space-between; 
-            align-items:center;
-            padding:15px; 
-            border-bottom:1px solid #00ffff20; 
-            color:#fff;
-        }
-        .key-item:hover {
-            background: rgba(0,255,255,0.1);
-        }
-        .key-item.unused {
-            border-left: 4px solid #00ff00;
-            background: rgba(0,255,0,0.05);
-        }
-        .key-item.used {
-            border-left: 4px solid #ffaa00;
-            background: rgba(255,170,0,0.05);
-        }
-        .key-item.expired {
-            border-left: 4px solid #ff0000;
-            background: rgba(255,0,0,0.05);
-            opacity: 0.7;
-        }
-        .badge {
-            display: inline-block;
-            padding: 3px 8px;
-            border-radius: 4px;
-            font-size: 11px;
-            font-weight: bold;
-            margin-left: 10px;
-        }
-        .badge.unused { background: #00ff00; color: #000; }
-        .badge.used { background: #ffaa00; color: #000; }
-        .badge.expired { background: #ff0000; color: #fff; }
-        .badge.test { background: #ffaa00; color: #000; }
-        .badge.day { background: #00ff00; color: #000; }
-        .badge.week { background: #00ffff; color: #000; }
-        .badge.month { background: #aa00ff; color: #fff; }
-        .badge.year { background: #ff00ff; color: #fff; }
-        .logout-btn { 
-            background: #ff6464;
-            color: #0a0f1e;
-            text-decoration: none;
-            padding: 10px 20px;
-            border-radius: 4px;
-            font-weight: bold;
-        }
-        .generated {
-            margin-top: 10px;
-            padding: 10px;
-            background: rgba(0,255,0,0.1);
-            border: 1px solid #00ff00;
-            border-radius: 4px;
-            color: #00ff00;
-            max-height: 200px;
-            overflow-y: auto;
-        }
-        .flex-row {
+
+        .status-bar {
             display: flex;
-            gap: 10px;
             align-items: center;
-            flex-wrap: wrap;
+            justify-content: center;
+            gap: 8px;
+            padding: 12px;
+            background: rgba(34, 197, 94, 0.1);
+            border-radius: 12px;
+            margin-bottom: 24px;
+            font-size: 12px;
+            color: var(--success);
         }
-        .backup-list {
-            max-height: 200px;
-            overflow-y: auto;
-            background: #1a2a30;
-            padding: 10px;
-            border-radius: 4px;
+
+        .status-bar.offline {
+            background: rgba(239, 68, 68, 0.1);
+            color: var(--error);
         }
-        .backup-item {
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background: currentColor;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .section {
+            margin-bottom: 24px;
+        }
+
+        .section-title {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: var(--text-muted);
+            margin-bottom: 12px;
+            font-weight: 600;
+        }
+
+        .input-group {
+            position: relative;
+        }
+
+        .key-input {
+            width: 100%;
+            padding: 16px 20px;
+            background: var(--bg);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 16px;
+            color: var(--text);
+            font-size: 18px;
+            letter-spacing: 4px;
+            text-align: center;
+            text-transform: uppercase;
+            transition: all 0.3s;
+            outline: none;
+        }
+
+        .key-input:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+        }
+
+        .key-input::placeholder {
+            color: var(--text-muted);
+            letter-spacing: 2px;
+            font-size: 14px;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 16px;
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 16px;
+            font-size: 14px;
+            font-weight: 600;
+            letter-spacing: 1px;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-top: 12px;
+            text-transform: uppercase;
+        }
+
+        .btn:hover {
+            background: var(--primary-dark);
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px -5px rgba(99, 102, 241, 0.4);
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .message {
+            margin-top: 16px;
+            padding: 16px;
+            border-radius: 12px;
+            font-size: 13px;
+            text-align: center;
+            display: none;
+        }
+
+        .message.show {
+            display: block;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .message.success {
+            background: rgba(34, 197, 94, 0.1);
+            color: var(--success);
+            border: 1px solid rgba(34, 197, 94, 0.2);
+        }
+
+        .message.error {
+            background: rgba(239, 68, 68, 0.1);
+            color: var(--error);
+            border: 1px solid rgba(239, 68, 68, 0.2);
+        }
+
+        .key-info {
+            background: var(--bg);
+            border-radius: 16px;
+            padding: 20px;
+            margin-top: 16px;
+            display: none;
+        }
+
+        .key-info.show {
+            display: block;
+            animation: slideIn 0.3s ease;
+        }
+
+        .info-row {
             display: flex;
             justify-content: space-between;
-            padding: 8px;
-            border-bottom: 1px solid #00ffff20;
-            color: #a0b0c0;
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            font-size: 13px;
+        }
+
+        .info-row:last-child {
+            border-bottom: none;
+        }
+
+        .info-label {
+            color: var(--text-muted);
+        }
+
+        .info-value {
+            color: var(--text);
+            font-weight: 600;
+        }
+
+        .info-value.highlight {
+            color: var(--success);
+        }
+
+        .footer {
+            text-align: center;
+            padding: 20px;
+            font-size: 11px;
+            color: var(--text-muted);
+            border-top: 1px solid rgba(255,255,255,0.05);
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
         }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🔥 ATLAS INDESTRUCTIBLE KEY ADMIN</h1>
-            <div>
-                <span style="color:#00ffff; margin-right:15px;" id="redisStatus">🔄 Redis: Checking...</span>
-                <a href="/logout" class="logout-btn">Logout</a>
+            <div class="logo">ATLAS</div>
+            <div class="tagline">Key Authentication System</div>
+        </div>
+        
+        <div class="content">
+            <div class="status-bar" id="statusBar">
+                <div class="status-dot"></div>
+                <span id="statusText">Connecting...</span>
+            </div>
+
+            <div class="section">
+                <div class="section-title">Enter License Key</div>
+                <div class="input-group">
+                    <input type="text" class="key-input" id="keyInput" placeholder="XXXX-XXXX-XXXX-XXXX" maxlength="19">
+                </div>
+                <button class="btn" id="validateBtn" onclick="validateKey()">
+                    <span id="btnText">Validate Key</span>
+                </button>
+                
+                <div class="message" id="message"></div>
+                
+                <div class="key-info" id="keyInfo">
+                    <div class="info-row">
+                        <span class="info-label">Status</span>
+                        <span class="info-value highlight" id="infoStatus">Active</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Duration</span>
+                        <span class="info-value" id="infoDuration">7 Days</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Time Remaining</span>
+                        <span class="info-value highlight" id="infoTime">6 days</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Activations</span>
+                        <span class="info-value" id="infoActivations">1</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Expires</span>
+                        <span class="info-value" id="infoExpiry">2024-12-31</span>
+                    </div>
+                </div>
             </div>
         </div>
         
-        <div class="info-box">
-            ⚡ <strong>INDESTRUCTIBLE MODE ACTIVE:</strong> Keys auto-save every 5 minutes + 50 backups + Redis cloud backup (if configured)
+        <div class="footer">
+            Secure Cloud Authentication • HWID Protected
         </div>
+    </div>
+
+    <script>
+        // Auto-format key input
+        const keyInput = document.getElementById('keyInput');
+        keyInput.addEventListener('input', (e) => {
+            let value = e.target.value.replace(/-/g, '').toUpperCase();
+            let formatted = '';
+            for (let i = 0; i < value.length && i < 16; i++) {
+                if (i > 0 && i % 4 === 0) formatted += '-';
+                formatted += value[i];
+            }
+            e.target.value = formatted;
+        });
+
+        // Check server status
+        async function checkStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                document.getElementById('statusBar').className = 'status-bar';
+                document.getElementById('statusText').textContent = `Server Online • ${data.keys_total} keys loaded`;
+            } catch {
+                document.getElementById('statusBar').className = 'status-bar offline';
+                document.getElementById('statusText').textContent = 'Server Offline';
+            }
+        }
+        checkStatus();
+        setInterval(checkStatus, 10000);
+
+        // Validate key
+        async function validateKey() {
+            const key = keyInput.value.trim();
+            const btn = document.getElementById('validateBtn');
+            const btnText = document.getElementById('btnText');
+            const msg = document.getElementById('message');
+            const info = document.getElementById('keyInfo');
+
+            if (key.length < 19) {
+                showMessage('Please enter a complete key', 'error');
+                return;
+            }
+
+            btn.disabled = true;
+            btnText.innerHTML = '<span class="spinner"></span>Validating...';
+
+            try {
+                // Generate HWID
+                const hwid = Math.random().toString(36).substring(2, 15);
+                
+                const res = await fetch('/api/validate', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({key: key, hwid: hwid})
+                });
+                
+                const data = await res.json();
+                
+                if (data.valid) {
+                    showMessage('✓ Key validated successfully', 'success');
+                    showKeyInfo(data);
+                } else {
+                    showMessage('✗ ' + data.message, 'error');
+                    info.classList.remove('show');
+                }
+            } catch (err) {
+                showMessage('✗ Connection failed', 'error');
+            }
+
+            btn.disabled = false;
+            btnText.textContent = 'Validate Key';
+        }
+
+        function showMessage(text, type) {
+            const msg = document.getElementById('message');
+            msg.textContent = text;
+            msg.className = 'message ' + type + ' show';
+            setTimeout(() => msg.classList.remove('show'), 5000);
+        }
+
+        function showKeyInfo(data) {
+            const info = document.getElementById('keyInfo');
+            
+            const durationMap = {
+                '1hour': '1 Hour',
+                '1day': '1 Day',
+                '7days': '7 Days',
+                '30days': '30 Days',
+                '365days': '1 Year',
+                'lifetime': 'Lifetime'
+            };
+            
+            document.getElementById('infoDuration').textContent = durationMap[data.duration] || data.duration;
+            
+            let timeText = '';
+            if (data.days_left > 0) {
+                timeText = data.days_left + ' days';
+            } else if (data.hours_left) {
+                timeText = data.hours_left + ' hours';
+            } else {
+                timeText = 'Expired';
+            }
+            document.getElementById('infoTime').textContent = timeText;
+            document.getElementById('infoActivations').textContent = data.activations;
+            document.getElementById('infoExpiry').textContent = new Date(data.expiry).toLocaleDateString();
+            
+            info.classList.add('show');
+        }
+
+        // Enter key to submit
+        keyInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') validateKey();
+        });
+    </script>
+</body>
+</html>
+"""
+
+ADMIN_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ATLAS Admin</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'SF Pro Display', -apple-system, sans-serif;
+        }
         
-        <div class="stats" id="stats">
-            <div class="stat-card"><div class="stat-value" id="total">0</div><div>Total Keys</div></div>
-            <div class="stat-card"><div class="stat-value" id="used">0</div><div>Used Keys</div></div>
-            <div class="stat-card"><div class="stat-value" id="available">0</div><div>Available</div></div>
-            <div class="stat-card"><div class="stat-value" id="expired">0</div><div>Expired</div></div>
-            <div class="stat-card"><div class="stat-value" id="testKeys">0</div><div>Test Keys</div></div>
-            <div class="stat-card"><div class="stat-value" id="backups">0</div><div>Backups</div></div>
-        </div>
+        body {
+            background: #0a0a0f;
+            color: #f1f1f4;
+            padding: 20px;
+            line-height: 1.6;
+        }
         
-        <div class="panel">
-            <h2>🔑 Generate Keys</h2>
-            <input type="number" id="count" value="5" min="1" max="100">
-            <select id="duration">
-                <option value="2min">⏱️ 2 Minutes (TEST KEY)</option>
-                <option value="1day">📅 1 Day</option>
-                <option value="7days">📆 7 Days</option>
-                <option value="30days">🗓️ 30 Days</option>
-                <option value="365days">📅 1 Year</option>
-            </select>
-            <button onclick="generateKeys()">Generate Keys</button>
-            <div id="generated" class="generated" style="display:none;"></div>
-        </div>
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
         
-        <div class="panel">
-            <h2>🛡️ Emergency Recovery</h2>
-            <div class="flex-row">
-                <button class="success" onclick="showBackups()">📋 Show Available Backups</button>
-                <button class="warning" onclick="recoverFromRedis()">☁️ Recover from Redis</button>
-                <button class="warning" onclick="resetExpired()">🗑️ Delete Expired Keys</button>
-                <button class="danger" onclick="resetAllKeys()">💀 DELETE ALL KEYS</button>
+        h1 {
+            font-size: 28px;
+            margin-bottom: 8px;
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        
+        .subtitle {
+            color: #6b6b7b;
+            margin-bottom: 30px;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 30px;
+        }
+        
+        .stat-card {
+            background: #141418;
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: 16px;
+            padding: 24px;
+            text-align: center;
+        }
+        
+        .stat-value {
+            font-size: 36px;
+            font-weight: 700;
+            color: #6366f1;
+            margin-bottom: 4px;
+        }
+        
+        .stat-label {
+            font-size: 12px;
+            color: #6b6b7b;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .panel {
+            background: #141418;
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 20px;
+        }
+        
+        .panel h2 {
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: #6b6b7b;
+            margin-bottom: 20px;
+        }
+        
+        .form-row {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+        }
+        
+        input, select {
+            flex: 1;
+            min-width: 150px;
+            padding: 12px 16px;
+            background: #0a0a0f;
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 12px;
+            color: #f1f1f4;
+            font-size: 14px;
+            outline: none;
+        }
+        
+        input:focus, select:focus {
+            border-color: #6366f1;
+        }
+        
+        button {
+            padding: 12px 24px;
+            background: #6366f1;
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        button:hover {
+            background: #4f46e5;
+            transform: translateY(-2px);
+        }
+        
+        button.secondary {
+            background: rgba(255,255,255,0.1);
+        }
+        
+        button.secondary:hover {
+            background: rgba(255,255,255,0.15);
+        }
+        
+        button.danger {
+            background: #ef4444;
+        }
+        
+        button.danger:hover {
+            background: #dc2626;
+        }
+        
+        .key-list {
+            max-height: 500px;
+            overflow-y: auto;
+            border-radius: 12px;
+            background: #0a0a0f;
+        }
+        
+        .key-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+        
+        .key-item:hover {
+            background: rgba(255,255,255,0.02);
+        }
+        
+        .key-info {
+            flex: 1;
+        }
+        
+        .key-code {
+            font-family: monospace;
+            font-size: 16px;
+            color: #6366f1;
+            margin-bottom: 4px;
+        }
+        
+        .key-meta {
+            font-size: 12px;
+            color: #6b6b7b;
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            margin-left: 8px;
+        }
+        
+        .badge-unused {
+            background: rgba(34, 197, 94, 0.2);
+            color: #22c55e;
+        }
+        
+        .badge-used {
+            background: rgba(245, 158, 11, 0.2);
+            color: #f59e0b;
+        }
+        
+        .badge-expired {
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+        }
+        
+        .badge-1hour { background: rgba(99, 102, 241, 0.2); color: #6366f1; }
+        .badge-1day { background: rgba(34, 197, 94, 0.2); color: #22c55e; }
+        .badge-7days { background: rgba(59, 130, 246, 0.2); color: #3b82f6; }
+        .badge-30days { background: rgba(139, 92, 246, 0.2); color: #8b5cf6; }
+        .badge-365days { background: rgba(236, 72, 153, 0.2); color: #ec4899; }
+        
+        .generated-keys {
+            background: #0a0a0f;
+            border-radius: 12px;
+            padding: 16px;
+            margin-top: 16px;
+            font-family: monospace;
+            font-size: 14px;
+            line-height: 2;
+            display: none;
+        }
+        
+        .generated-keys.show {
+            display: block;
+        }
+        
+        .copy-btn {
+            padding: 6px 12px;
+            font-size: 12px;
+            background: rgba(255,255,255,0.1);
+        }
+        
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: #0a0a0f;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: #2a2a30;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ATLAS Admin</h1>
+        <p class="subtitle">Key Management Dashboard</p>
+        
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value" id="statTotal">0</div>
+                <div class="stat-label">Total Keys</div>
             </div>
-            <div id="backupList" class="backup-list" style="display:none; margin-top:15px;"></div>
+            <div class="stat-card">
+                <div class="stat-value" id="statUsed">0</div>
+                <div class="stat-label">Used</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="statAvailable">0</div>
+                <div class="stat-label">Available</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="statExpired">0</div>
+                <div class="stat-label">Expired</div>
+            </div>
         </div>
         
         <div class="panel">
-            <h2>📋 All Keys <span style="color:#a0b0c0; font-size:14px;" id="keyCount"></span></h2>
+            <h2>Generate Keys</h2>
+            <div class="form-row">
+                <input type="number" id="genCount" value="5" min="1" max="100" placeholder="Count">
+                <select id="genDuration">
+                    <option value="1hour">1 Hour</option>
+                    <option value="1day">1 Day</option>
+                    <option value="7days" selected>7 Days</option>
+                    <option value="30days">30 Days</option>
+                    <option value="365days">365 Days</option>
+                    <option value="lifetime">Lifetime</option>
+                </select>
+                <button onclick="generateKeys()">Generate</button>
+            </div>
+            <div class="generated-keys" id="generatedBox"></div>
+        </div>
+        
+        <div class="panel">
+            <h2>All Keys</h2>
+            <div class="form-row">
+                <button class="secondary" onclick="loadKeys()">Refresh</button>
+                <button class="danger" onclick="deleteExpired()">Delete Expired</button>
+            </div>
             <div class="key-list" id="keyList"></div>
         </div>
     </div>
     
     <script>
-        let backupsData = [];
-        
         async function loadStats() {
-            try {
-                const res = await fetch('/admin/api/stats');
-                const data = await res.json();
-                document.getElementById('total').textContent = data.total;
-                document.getElementById('used').textContent = data.used;
-                document.getElementById('available').textContent = data.available;
-                document.getElementById('expired').textContent = data.expired;
-                document.getElementById('backups').textContent = data.backups || 0;
-                
-                // Redis status
-                const redisEl = document.getElementById('redisStatus');
-                if (data.redis_enabled) {
-                    redisEl.innerHTML = '✅ Redis: Connected';
-                    redisEl.style.color = '#00ff00';
-                } else {
-                    redisEl.innerHTML = '⚠️ Redis: Local Only';
-                    redisEl.style.color = '#ffaa00';
-                }
-                
-                const testCount = data.duration_counts ? (data.duration_counts['2min'] || 0) : 0;
-                document.getElementById('testKeys').textContent = testCount;
-            } catch (e) {
-                console.error('Failed to load stats', e);
-            }
-        }
-        
-        async function showBackups() {
-            try {
-                const res = await fetch('/admin/api/backups');
-                const data = await res.json();
-                backupsData = data.backups || [];
-                
-                const listDiv = document.getElementById('backupList');
-                if (backupsData.length === 0) {
-                    listDiv.innerHTML = '<div style="color:#ffaa00;">No backups found</div>';
-                } else {
-                    let html = '<h3 style="color:#00ffff;">Available Backups:</h3>';
-                    backupsData.forEach(backup => {
-                        html += `
-                            <div class="backup-item">
-                                <span>📁 ${backup.filename}</span>
-                                <span>${backup.key_count} keys | ${(backup.size/1024).toFixed(2)} KB</span>
-                                <button onclick="recoverFromBackup('${backup.filename}')" style="padding:2px 10px;">Recover</button>
-                            </div>
-                        `;
-                    });
-                    listDiv.innerHTML = html;
-                }
-                listDiv.style.display = 'block';
-            } catch (e) {
-                console.error('Failed to load backups', e);
-            }
-        }
-        
-        async function recoverFromBackup(filename) {
-            if (confirm(`Recover keys from ${filename}? Current keys will be replaced.`)) {
-                try {
-                    const res = await fetch('/admin/api/recover', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({backup_file: filename})
-                    });
-                    const data = await res.json();
-                    if (data.success) {
-                        alert('✅ ' + data.message);
-                        loadKeys();
-                        loadStats();
-                    } else {
-                        alert('❌ ' + data.error);
-                    }
-                } catch (e) {
-                    alert('Recovery failed');
-                }
-            }
-        }
-        
-        async function recoverFromRedis() {
-            if (confirm('Recover keys from Redis backup?')) {
-                try {
-                    const res = await fetch('/admin/api/recover', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({})
-                    });
-                    const data = await res.json();
-                    if (data.success) {
-                        alert('✅ ' + data.message);
-                        loadKeys();
-                        loadStats();
-                    } else {
-                        alert('❌ ' + data.error);
-                    }
-                } catch (e) {
-                    alert('Recovery failed');
-                }
-            }
-        }
-        
-        async function loadKeys() {
-            try {
-                const res = await fetch('/admin/api/keys');
-                const keys = await res.json();
-                const list = document.getElementById('keyList');
-                list.innerHTML = '';
-                
-                let keyCount = 0;
-                
-                Object.entries(keys).sort((a,b) => new Date(b[1].created) - new Date(a[1].created)).forEach(([key, data]) => {
-                    const div = document.createElement('div');
-                    
-                    let status = 'UNUSED';
-                    let statusClass = 'unused';
-                    let expiryInfo = '';
-                    
-                    const now = new Date();
-                    
-                    if (data.used) {
-                        if (data.expiry) {
-                            const expiryDate = new Date(data.expiry);
-                            if (expiryDate < now) {
-                                status = 'EXPIRED';
-                                statusClass = 'expired';
-                                expiryInfo = ' | Expired: ' + expiryDate.toLocaleString();
-                            } else {
-                                status = 'ACTIVE';
-                                statusClass = 'used';
-                                const daysLeft = Math.round((expiryDate - now) / (1000 * 60 * 60 * 24));
-                                const hoursLeft = Math.round((expiryDate - now) / (1000 * 60 * 60));
-                                if (daysLeft > 0) {
-                                    expiryInfo = ' | ' + daysLeft + ' days left';
-                                } else {
-                                    expiryInfo = ' | ' + hoursLeft + ' hours left';
-                                }
-                            }
-                        } else {
-                            status = 'ACTIVE';
-                            statusClass = 'used';
-                        }
-                    }
-                    
-                    div.className = 'key-item ' + statusClass;
-                    
-                    let badge = '';
-                    if (data.duration === '2min') badge = '<span class="badge test">2min</span>';
-                    else if (data.duration === '1day') badge = '<span class="badge day">1d</span>';
-                    else if (data.duration === '7days') badge = '<span class="badge week">7d</span>';
-                    else if (data.duration === '30days') badge = '<span class="badge month">30d</span>';
-                    else if (data.duration === '365days') badge = '<span class="badge year">365d</span>';
-                    
-                    const createdDate = new Date(data.created).toLocaleDateString();
-                    
-                    div.innerHTML = `
-                        <div>
-                            <div style="color:#00ffff; font-family:monospace; font-size:16px;">
-                                ${key} ${badge}
-                            </div>
-                            <div style="margin-top:5px;">
-                                <span style="color:${statusClass === 'unused' ? '#00ff00' : (statusClass === 'expired' ? '#ff0000' : '#ffaa00')};">${status}</span>
-                                <span style="color:#a0b0c0; margin-left:10px;">Created: ${createdDate}</span>
-                                ${expiryInfo ? `<span style="color:#ffaa00;">${expiryInfo}</span>` : ''}
-                            </div>
-                            ${data.hwid ? `<div style="color:#ffaa00; font-size:11px;">HWID: ${data.hwid.substring(0,16)}...</div>` : ''}
-                            ${data.activated_date ? `<div style="color:#a0b0c0; font-size:11px;">Activated: ${new Date(data.activated_date).toLocaleDateString()}</div>` : ''}
-                        </div>
-                        <button onclick="deleteKey('${key}')" style="background:#ff6464;">Delete</button>
-                    `;
-                    list.appendChild(div);
-                    keyCount++;
-                });
-                
-                document.getElementById('keyCount').textContent = `(${keyCount} keys)`;
-            } catch (e) {
-                console.error('Failed to load keys', e);
-            }
+            const res = await fetch('/admin/api/stats');
+            const data = await res.json();
+            document.getElementById('statTotal').textContent = data.total;
+            document.getElementById('statUsed').textContent = data.used;
+            document.getElementById('statAvailable').textContent = data.available;
+            document.getElementById('statExpired').textContent = data.expired;
         }
         
         async function generateKeys() {
-            try {
-                const count = document.getElementById('count').value;
-                const duration = document.getElementById('duration').value;
+            const count = document.getElementById('genCount').value;
+            const duration = document.getElementById('genDuration').value;
+            
+            const res = await fetch('/admin/api/generate', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({count: parseInt(count), duration: duration})
+            });
+            
+            const data = await res.json();
+            const box = document.getElementById('generatedBox');
+            box.innerHTML = data.keys.join('<br>');
+            box.classList.add('show');
+            
+            loadStats();
+            loadKeys();
+        }
+        
+        async function loadKeys() {
+            const res = await fetch('/admin/api/keys');
+            const keys = await res.json();
+            const list = document.getElementById('keyList');
+            
+            list.innerHTML = Object.entries(keys).sort((a,b) => {
+                return new Date(b[1].created) - new Date(a[1].created);
+            }).map(([key, data]) => {
+                const now = new Date();
+                const expiry = new Date(data.expiry);
+                const isExpired = expiry < now;
                 
-                const res = await fetch('/admin/api/generate', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({count: parseInt(count), duration: duration})
-                });
+                let status = 'unused';
+                let statusText = 'Unused';
+                if (data.used) {
+                    if (isExpired) {
+                        status = 'expired';
+                        statusText = 'Expired';
+                    } else {
+                        status = 'used';
+                        statusText = 'Active';
+                    }
+                }
                 
-                const data = await res.json();
-                const generatedDiv = document.getElementById('generated');
-                generatedDiv.style.display = 'block';
+                const durationBadge = `badge-${data.duration}`;
                 
-                let durationText = '';
-                if (duration === '2min') durationText = '2 MINUTE TEST KEYS';
-                else if (duration === '1day') durationText = '1 DAY KEYS';
-                else if (duration === '7days') durationText = '7 DAY KEYS';
-                else if (duration === '30days') durationText = '30 DAY KEYS';
-                else if (duration === '365days') durationText = '1 YEAR KEYS';
-                
-                generatedDiv.innerHTML = '✅ Generated ' + data.keys.length + ' ' + durationText + ':<br>' + data.keys.join('<br>');
-                
-                loadStats();
-                loadKeys();
-                
-                setTimeout(() => {
-                    generatedDiv.style.display = 'none';
-                }, 15000);
-            } catch (e) {
-                console.error('Failed to generate keys', e);
-            }
+                return `
+                    <div class="key-item">
+                        <div class="key-info">
+                            <div class="key-code">
+                                ${key}
+                                <span class="badge ${durationBadge}">${data.duration}</span>
+                                <span class="badge badge-${status}">${statusText}</span>
+                            </div>
+                            <div class="key-meta">
+                                Created: ${new Date(data.created).toLocaleDateString()} | 
+                                ${data.used ? `Activated: ${new Date(data.activated).toLocaleDateString()}` : 'Not activated'} |
+                                Expires: ${expiry.toLocaleDateString()}
+                            </div>
+                        </div>
+                        <button class="danger" onclick="deleteKey('${key}')">Delete</button>
+                    </div>
+                `;
+            }).join('');
         }
         
         async function deleteKey(key) {
-            if (confirm('Delete this key?')) {
-                try {
-                    await fetch('/admin/api/delete/' + key, {method: 'DELETE'});
-                    loadKeys();
-                    loadStats();
-                } catch (e) {
-                    console.error('Failed to delete key', e);
-                }
-            }
+            if (!confirm('Delete this key?')) return;
+            await fetch('/admin/api/delete/' + key, {method: 'DELETE'});
+            loadKeys();
+            loadStats();
         }
         
-        async function resetExpired() {
-            if (confirm('Delete all expired keys?')) {
-                try {
-                    const res = await fetch('/admin/api/reset-expired', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'}
-                    });
-                    const data = await res.json();
-                    alert('✅ Deleted ' + data.count + ' expired keys');
-                    loadKeys();
-                    loadStats();
-                } catch (e) {
-                    console.error('Failed to reset expired keys', e);
-                }
-            }
+        async function deleteExpired() {
+            if (!confirm('Delete all expired keys?')) return;
+            await fetch('/admin/api/reset-expired', {method: 'POST'});
+            loadKeys();
+            loadStats();
         }
         
-        async function resetAllKeys() {
-            const confirmText = prompt('Type "DELETE ALL" to confirm deleting ALL keys:');
-            if (confirmText === 'DELETE ALL') {
-                try {
-                    const res = await fetch('/admin/api/reset-all', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({confirm: 'DELETE ALL'})
-                    });
-                    const data = await res.json();
-                    if (data.success) {
-                        alert('✅ ' + data.message);
-                        loadKeys();
-                        loadStats();
-                    } else {
-                        alert('❌ ' + data.message);
-                    }
-                } catch (e) {
-                    console.error('Failed to reset all keys', e);
-                }
-            } else {
-                alert('❌ Confirmation failed - no keys deleted');
-            }
-        }
-        
-        // Load everything
         loadStats();
         loadKeys();
-        
-        // Refresh every 30 seconds
         setInterval(() => {
             loadStats();
             loadKeys();
@@ -1238,21 +1095,9 @@ ADMIN_HTML = """
 </html>
 """
 
-# ============================================================================
-# RUN
-# ============================================================================
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
-    print("\n" + "="*60)
-    print("🚀 ATLAS INDESTRUCTIBLE SERVER V2.0")
-    print("="*60)
-    print(f"🔑 Keys loaded: {len(KEYS)}")
-    print(f"👤 Profiles loaded: {len(USER_PROFILES)}")
-    print(f"💾 Backups available: {len(glob.glob('keys_backup_*.json'))}")
-    print(f"🔄 Auto-save: Every 5 minutes")
-    print(f"☁️ Redis: {'CONNECTED' if redis_mgr.enabled else 'Local-Only Mode'}")
-    if not redis_mgr.enabled:
-        print("   ⚠️  Set UPSTASH_REDIS_HOST/PORT/PASSWORD to enable cloud backup")
-    print(f"📊 Admin: https://atlas-r6-keys.onrender.com/admin")
-    print("="*60 + "\n")
+    print(f"\n🚀 ATLAS Key System starting on port {port}")
+    print(f"📊 Admin panel: http://localhost:{port}/admin")
+    print(f"🔑 Default admin: {ADMIN_USER} / {ADMIN_PASS[:4]}****")
     app.run(host='0.0.0.0', port=port)
