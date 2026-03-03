@@ -21,9 +21,17 @@ from functools import wraps
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
-CORS(app)
 
-# Add CORS headers to all responses for desktop client
+# Enable CORS for all origins (needed for desktop clients)
+CORS(app, resources={
+    r"/api/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"]
+    }
+})
+
+# Also add CORS headers to all responses
 @app.after_request
 def after_request(response):
     response.headers.add('Access-Control-Allow-Origin', '*')
@@ -72,14 +80,12 @@ def atomic_write(filepath, data):
         with open(temp_file, 'w') as f:
             json.dump(data, f, indent=2)
             f.flush()
-            os.fsync(f.fileno())  # FORCE WRITE TO DISK IMMEDIATELY
+            os.fsync(f.fileno())
 
-        # Create backup of current file before replacing
         if os.path.exists(filepath):
             backup_path = filepath + '.bak'
             shutil.copy2(filepath, backup_path)
 
-        # Atomic rename - this is instant and safe
         os.replace(temp_file, filepath)
         return True
     except Exception as e:
@@ -92,15 +98,11 @@ def atomic_write(filepath, data):
         return False
 
 def save_data(force=False):
-    """
-    Save all data to disk - THREAD SAFE
-    Call with force=True for immediate save, otherwise batches saves
-    """
+    """Save all data to disk - THREAD SAFE"""
     global _data_modified
 
     with file_lock:
         try:
-            # Atomic writes for all files
             success = True
             success &= atomic_write(KEYS_FILE, KEYS)
             success &= atomic_write(PROFILES_FILE, USER_PROFILES)
@@ -120,14 +122,12 @@ def load_data():
     global KEYS, USER_PROFILES, STATS
 
     def load_file(filepath, default):
-        """Load JSON with fallback to backup if corrupted"""
         if os.path.exists(filepath):
             try:
                 with open(filepath, 'r') as f:
                     return json.load(f)
             except (json.JSONDecodeError, IOError) as e:
                 print(f"[WARNING] {os.path.basename(filepath)} corrupted: {e}")
-                # Try backup
                 bak_path = filepath + '.bak'
                 if os.path.exists(bak_path):
                     try:
@@ -158,7 +158,6 @@ def create_backup():
             dst = os.path.join(BACKUP_DIR, f"{filename}.{timestamp}")
             shutil.copy2(src, dst)
 
-    # Cleanup old backups (keep last 20)
     cleanup_backups()
     print(f"[{datetime.now().strftime('%H:%M:%S')}] 📁 Backup created: {timestamp}")
 
@@ -176,7 +175,6 @@ def cleanup_backups():
             except:
                 pass
 
-# Auto-save thread - saves every 30 seconds if data changed
 def auto_save_worker():
     global _data_modified
     while True:
@@ -186,36 +184,32 @@ def auto_save_worker():
             print(f"[{datetime.now().strftime('%H:%M')}] Auto-saved")
 
 # ============================================================================
-# SHUTDOWN HANDLERS - CRITICAL FOR DATA PERSISTENCE
+# SHUTDOWN HANDLERS
 # ============================================================================
 
 def emergency_save():
-    """Emergency save - called on shutdown"""
     print("\n[SHUTDOWN] Saving data before exit...")
     save_data(force=True)
     create_backup()
     print("[SHUTDOWN] Data saved safely. Goodbye!")
 
 def signal_handler(signum, frame):
-    """Handle shutdown signals"""
     print(f"\n[SIGNAL] Received {signum}, saving...")
     emergency_save()
     sys.exit(0)
 
-# Register shutdown handlers
 atexit.register(emergency_save)
-signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C
-signal.signal(signal.SIGTERM, signal_handler)  # Kill/Terminate
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 # ============================================================================
-# KEY FUNCTIONS - ALL IMMEDIATE SAVE
+# KEY FUNCTIONS
 # ============================================================================
 
 def generate_key(duration='7days'):
     """Generate new key - SAVES IMMEDIATELY"""
     global _data_modified
 
-    # Generate key in format XXXX-XXXX-XXXX-XXXX-XXXX-XXXX (24 chars)
     key = '-'.join([secrets.token_hex(2).upper() for _ in range(6)])
 
     duration_map = {
@@ -241,7 +235,7 @@ def generate_key(duration='7days'):
 
     STATS['generations'] += 1
     _data_modified = True
-    save_data(force=True)  # IMMEDIATE SAVE - NO WAITING
+    save_data(force=True)
     return key
 
 def validate_key(key, hwid):
@@ -257,15 +251,12 @@ def validate_key(key, hwid):
     now = datetime.now()
     expiry = datetime.fromisoformat(data['expiry'])
 
-    # Check expiry
     if expiry < now:
         return {'valid': False, 'message': 'Key expired'}
 
-    # Check HWID lock
     if data['used'] and data['hwid'] and data['hwid'] != hwid:
         return {'valid': False, 'message': 'Key in use on another device'}
 
-    # Activate
     if not data['used']:
         data['used'] = True
         data['activated'] = now.isoformat()
@@ -275,7 +266,7 @@ def validate_key(key, hwid):
 
     STATS['validations'] += 1
     _data_modified = True
-    save_data(force=True)  # IMMEDIATE SAVE
+    save_data(force=True)
 
     days_left = (expiry - now).days
     hours_left = (expiry - now).seconds // 3600
@@ -419,187 +410,34 @@ INDEX_HTML = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ATLAS | Key System</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-            font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-        }
-        :root {
-            --primary: #6366f1;
-            --primary-dark: #4f46e5;
-            --bg: #0a0a0f;
-            --surface: #141418;
-            --text: #f1f1f4;
-            --text-muted: #6b6b7b;
-            --success: #22c55e;
-            --error: #ef4444;
-        }
-        body {
-            background: var(--bg);
-            color: var(--text);
-            min-height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            padding: 20px;
-        }
-        .container {
-            width: 100%;
-            max-width: 480px;
-            background: var(--surface);
-            border-radius: 24px;
-            border: 1px solid rgba(255,255,255,0.06);
-            overflow: hidden;
-            box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5);
-        }
-        .header {
-            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
-            padding: 40px 30px;
-            text-align: center;
-        }
-        .logo {
-            font-size: 32px;
-            font-weight: 800;
-            letter-spacing: 4px;
-            margin-bottom: 8px;
-        }
-        .tagline {
-            font-size: 12px;
-            opacity: 0.8;
-            letter-spacing: 2px;
-            text-transform: uppercase;
-        }
-        .content {
-            padding: 30px;
-        }
-        .status-bar {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-            padding: 12px;
-            background: rgba(34, 197, 94, 0.1);
-            border-radius: 12px;
-            margin-bottom: 24px;
-            font-size: 12px;
-            color: var(--success);
-        }
-        .status-bar.offline {
-            background: rgba(239, 68, 68, 0.1);
-            color: var(--error);
-        }
-        .status-dot {
-            width: 8px;
-            height: 8px;
-            background: currentColor;
-            border-radius: 50%;
-            animation: pulse 2s infinite;
-        }
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-        .section-title {
-            font-size: 11px;
-            text-transform: uppercase;
-            letter-spacing: 2px;
-            color: var(--text-muted);
-            margin-bottom: 12px;
-            font-weight: 600;
-        }
-        .key-input {
-            width: 100%;
-            padding: 16px 20px;
-            background: var(--bg);
-            border: 1px solid rgba(255,255,255,0.1);
-            border-radius: 16px;
-            color: var(--text);
-            font-size: 18px;
-            letter-spacing: 4px;
-            text-align: center;
-            text-transform: uppercase;
-            transition: all 0.3s;
-            outline: none;
-        }
-        .key-input:focus {
-            border-color: var(--primary);
-            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
-        }
-        .btn {
-            width: 100%;
-            padding: 16px;
-            background: var(--primary);
-            color: white;
-            border: none;
-            border-radius: 16px;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            margin-top: 12px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-        .btn:hover {
-            background: var(--primary-dark);
-            transform: translateY(-2px);
-        }
-        .btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-        .message {
-            margin-top: 16px;
-            padding: 16px;
-            border-radius: 12px;
-            font-size: 13px;
-            text-align: center;
-            display: none;
-        }
-        .message.show {
-            display: block;
-        }
-        .message.success {
-            background: rgba(34, 197, 94, 0.1);
-            color: var(--success);
-            border: 1px solid rgba(34, 197, 94, 0.2);
-        }
-        .message.error {
-            background: rgba(239, 68, 68, 0.1);
-            color: var(--error);
-            border: 1px solid rgba(239, 68, 68, 0.2);
-        }
-        .key-info {
-            background: var(--bg);
-            border-radius: 16px;
-            padding: 20px;
-            margin-top: 16px;
-            display: none;
-        }
-        .key-info.show {
-            display: block;
-        }
-        .info-row {
-            display: flex;
-            justify-content: space-between;
-            padding: 8px 0;
-            border-bottom: 1px solid rgba(255,255,255,0.05);
-            font-size: 13px;
-        }
-        .info-label {
-            color: var(--text-muted);
-        }
-        .info-value {
-            color: var(--text);
-            font-weight: 600;
-        }
-        .footer {
-            text-align: center;
-            padding: 20px;
-            font-size: 11px;
-            color: var(--text-muted);
-            border-top: 1px solid rgba(255,255,255,0.05);
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+        :root { --primary: #6366f1; --primary-dark: #4f46e5; --bg: #0a0a0f; --surface: #141418; --text: #f1f1f4; --text-muted: #6b6b7b; --success: #22c55e; --error: #ef4444; }
+        body { background: var(--bg); color: var(--text); min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 20px; }
+        .container { width: 100%; max-width: 480px; background: var(--surface); border-radius: 24px; border: 1px solid rgba(255,255,255,0.06); overflow: hidden; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); }
+        .header { background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%); padding: 40px 30px; text-align: center; }
+        .logo { font-size: 32px; font-weight: 800; letter-spacing: 4px; margin-bottom: 8px; }
+        .tagline { font-size: 12px; opacity: 0.8; letter-spacing: 2px; text-transform: uppercase; }
+        .content { padding: 30px; }
+        .status-bar { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 12px; background: rgba(34, 197, 94, 0.1); border-radius: 12px; margin-bottom: 24px; font-size: 12px; color: var(--success); }
+        .status-bar.offline { background: rgba(239, 68, 68, 0.1); color: var(--error); }
+        .status-dot { width: 8px; height: 8px; background: currentColor; border-radius: 50%; animation: pulse 2s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        .section-title { font-size: 11px; text-transform: uppercase; letter-spacing: 2px; color: var(--text-muted); margin-bottom: 12px; font-weight: 600; }
+        .key-input { width: 100%; padding: 16px 20px; background: var(--bg); border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; color: var(--text); font-size: 18px; letter-spacing: 4px; text-align: center; text-transform: uppercase; transition: all 0.3s; outline: none; }
+        .key-input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1); }
+        .btn { width: 100%; padding: 16px; background: var(--primary); color: white; border: none; border-radius: 16px; font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 12px; text-transform: uppercase; letter-spacing: 1px; }
+        .btn:hover { background: var(--primary-dark); transform: translateY(-2px); }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .message { margin-top: 16px; padding: 16px; border-radius: 12px; font-size: 13px; text-align: center; display: none; }
+        .message.show { display: block; }
+        .message.success { background: rgba(34, 197, 94, 0.1); color: var(--success); border: 1px solid rgba(34, 197, 94, 0.2); }
+        .message.error { background: rgba(239, 68, 68, 0.1); color: var(--error); border: 1px solid rgba(239, 68, 68, 0.2); }
+        .key-info { background: var(--bg); border-radius: 16px; padding: 20px; margin-top: 16px; display: none; }
+        .key-info.show { display: block; }
+        .info-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 13px; }
+        .info-label { color: var(--text-muted); }
+        .info-value { color: var(--text); font-weight: 600; }
+        .footer { text-align: center; padding: 20px; font-size: 11px; color: var(--text-muted); border-top: 1px solid rgba(255,255,255,0.05); }
     </style>
 </head>
 <body>
@@ -619,22 +457,10 @@ INDEX_HTML = """
                 <button class="btn" id="validateBtn" onclick="validateKey()">Validate Key</button>
                 <div class="message" id="message"></div>
                 <div class="key-info" id="keyInfo">
-                    <div class="info-row">
-                        <span class="info-label">Status</span>
-                        <span class="info-value" style="color: var(--success)">Active</span>
-                    </div>
-                    <div class="info-row">
-                        <span class="info-label">Duration</span>
-                        <span class="info-value" id="infoDuration">7 Days</span>
-                    </div>
-                    <div class="info-row">
-                        <span class="info-label">Time Remaining</span>
-                        <span class="info-value" id="infoTime">6 days</span>
-                    </div>
-                    <div class="info-row">
-                        <span class="info-label">Activations</span>
-                        <span class="info-value" id="infoActivations">1</span>
-                    </div>
+                    <div class="info-row"><span class="info-label">Status</span><span class="info-value" style="color: var(--success)">Active</span></div>
+                    <div class="info-row"><span class="info-label">Duration</span><span class="info-value" id="infoDuration">7 Days</span></div>
+                    <div class="info-row"><span class="info-label">Time Remaining</span><span class="info-value" id="infoTime">6 days</span></div>
+                    <div class="info-row"><span class="info-label">Activations</span><span class="info-value" id="infoActivations">1</span></div>
                 </div>
             </div>
         </div>
@@ -744,14 +570,12 @@ ADMIN_HTML = """
     <div class="container">
         <h1>ATLAS Admin</h1>
         <p class="subtitle">Key Management Dashboard</p>
-
         <div class="stats-grid">
             <div class="stat-card"><div class="stat-value" id="statTotal">0</div><div class="stat-label">Total Keys</div></div>
             <div class="stat-card"><div class="stat-value" id="statUsed">0</div><div class="stat-label">Used</div></div>
             <div class="stat-card"><div class="stat-value" id="statAvailable">0</div><div class="stat-label">Available</div></div>
             <div class="stat-card"><div class="stat-value" id="statExpired">0</div><div class="stat-label">Expired</div></div>
         </div>
-
         <div class="panel">
             <h2>Generate Keys</h2>
             <div class="form-row">
@@ -768,7 +592,6 @@ ADMIN_HTML = """
             </div>
             <div class="generated-keys" id="generatedBox"></div>
         </div>
-
         <div class="panel">
             <h2>Data Safety</h2>
             <div class="form-row">
@@ -777,13 +600,11 @@ ADMIN_HTML = """
             </div>
             <div id="backupStatus" style="margin-top:10px;font-size:12px;color:#6b6b7b;"></div>
         </div>
-
         <div class="panel">
             <h2>All Keys</h2>
             <div class="key-list" id="keyList"></div>
         </div>
     </div>
-
     <script>
         async function loadStats() {
             const res = await fetch('/admin/api/stats');
@@ -851,7 +672,6 @@ if __name__ == '__main__':
     ensure_dirs()
     load_data()
 
-    # Start auto-save thread
     threading.Thread(target=auto_save_worker, daemon=True).start()
 
     port = int(os.environ.get('PORT', 10000))
