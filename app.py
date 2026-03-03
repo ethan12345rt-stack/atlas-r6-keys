@@ -23,6 +23,14 @@ app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 CORS(app)
 
+# Add CORS headers to all responses for desktop client
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    return response
+
 # ============================================================================
 # DATA STORAGE - ABSOLUTE PATHS FOR RELIABILITY
 # ============================================================================
@@ -530,6 +538,7 @@ INDEX_HTML = """
             cursor: pointer;
             margin-top: 12px;
             text-transform: uppercase;
+            letter-spacing: 1px;
         }
         .btn:hover {
             background: var(--primary-dark);
@@ -606,7 +615,7 @@ INDEX_HTML = """
             </div>
             <div class="section">
                 <div class="section-title">Enter License Key</div>
-                <input type="text" class="key-input" id="keyInput" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX" maxlength="29">
+                <input type="text" class="key-input" id="keyInput" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX" maxlength="35">
                 <button class="btn" id="validateBtn" onclick="validateKey()">Validate Key</button>
                 <div class="message" id="message"></div>
                 <div class="key-info" id="keyInfo">
@@ -657,7 +666,7 @@ INDEX_HTML = """
         setInterval(checkStatus, 10000);
         async function validateKey() {
             const key = keyInput.value.trim();
-            if (key.length < 29) {
+            if (key.length < 24) {
                 showMessage('Please enter complete key', 'error');
                 return;
             }
