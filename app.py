@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
 ATLAS KEY SYSTEM - BULLETPROOF PERSISTENT VERSION
+WITH FULL BACKUP MANAGEMENT
 Features: Zero data loss, atomic writes, immediate saves, crash recovery
+          Create backups, list backups, RESTORE from any backup
 """
 
 import os
@@ -14,19 +16,22 @@ import signal
 import sys
 import shutil
 import atexit
+import glob
 from datetime import datetime, timedelta
-from flask import Flask, render_template, render_template_string, jsonify, request, session, redirect
+from flask import Flask, render_template, render_template_string, jsonify, request, session, redirect, send_file
 from flask_cors import CORS
 from functools import wraps
+import zipfile
+import io
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 
-# Enable CORS for all origins (needed for desktop clients)
+# Enable CORS for all origins
 CORS(app, resources={
     r"/api/*": {
         "origins": "*",
-        "methods": ["GET", "POST", "OPTIONS"],
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         "allow_headers": ["Content-Type", "Authorization"]
     }
 })
@@ -67,6 +72,7 @@ def ensure_dirs():
     """Ensure all directories exist"""
     if not os.path.exists(BACKUP_DIR):
         os.makedirs(BACKUP_DIR)
+        print(f"[INIT] Created backup directory: {BACKUP_DIR}")
 
 def atomic_write(filepath, data):
     """
@@ -147,19 +153,106 @@ def load_data():
     print(f"[INFO] Loaded {len(KEYS)} keys, {len(USER_PROFILES)} profiles")
     return True
 
+def get_backup_list():
+    """Get list of all available backups"""
+    ensure_dirs()
+    backups = []
+    
+    # Get all backup files
+    backup_files = glob.glob(os.path.join(BACKUP_DIR, "*.json.*"))
+    
+    for file in backup_files:
+        filename = os.path.basename(file)
+        # Parse timestamp from filename (format: filename.json.YYYYMMDD_HHMMSS)
+        parts = filename.split('.')
+        if len(parts) >= 3:
+            timestamp_str = parts[-1]
+            try:
+                timestamp = datetime.strptime(timestamp_str, '%Y%m%d_%H%M%S')
+                file_type = parts[0]  # keys, profiles, or stats
+                
+                # Check if this backup is part of a set
+                base_name = '.'.join(parts[:-1])
+                backups.append({
+                    'filename': filename,
+                    'filepath': file,
+                    'type': file_type,
+                    'timestamp': timestamp.isoformat(),
+                    'timestamp_str': timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+                    'size': os.path.getsize(file)
+                })
+            except:
+                continue
+    
+    # Group by timestamp
+    grouped = {}
+    for backup in backups:
+        ts = backup['timestamp']
+        if ts not in grouped:
+            grouped[ts] = {
+                'timestamp': backup['timestamp_str'],
+                'files': [],
+                'id': backup['timestamp'].replace(':', '').replace('-', '').replace('T', '_')
+            }
+        grouped[ts]['files'].append(backup)
+    
+    # Convert to list and sort by timestamp (newest first)
+    backup_groups = list(grouped.values())
+    backup_groups.sort(key=lambda x: x['timestamp'], reverse=True)
+    
+    return backup_groups
+
 def create_backup():
-    """Create timestamped backup"""
+    """Create timestamped backup of all data files"""
     ensure_dirs()
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    created_files = []
 
     for filename in ['keys.json', 'profiles.json', 'stats.json']:
         src = os.path.join(BASE_DIR, filename)
         if os.path.exists(src):
             dst = os.path.join(BACKUP_DIR, f"{filename}.{timestamp}")
             shutil.copy2(src, dst)
+            created_files.append(dst)
 
+    # Cleanup old backups
     cleanup_backups()
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 📁 Backup created: {timestamp}")
+    
+    if created_files:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 📁 Backup created: {timestamp} with {len(created_files)} files")
+        return {'success': True, 'timestamp': timestamp, 'files': created_files}
+    else:
+        return {'success': False, 'message': 'No files to backup'}
+
+def restore_backup(timestamp):
+    """Restore data from a specific backup timestamp"""
+    try:
+        restored_files = []
+        
+        # Find all backup files with this timestamp
+        for filename in ['keys.json', 'profiles.json', 'stats.json']:
+            backup_file = os.path.join(BACKUP_DIR, f"{filename}.{timestamp}")
+            if os.path.exists(backup_file):
+                # Create a backup of current files before restoring
+                current_backup = os.path.join(BACKUP_DIR, f"pre_restore_{filename}.{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+                if os.path.exists(os.path.join(BASE_DIR, filename)):
+                    shutil.copy2(os.path.join(BASE_DIR, filename), current_backup)
+                
+                # Restore from backup
+                shutil.copy2(backup_file, os.path.join(BASE_DIR, filename))
+                restored_files.append(filename)
+        
+        if restored_files:
+            # Reload data into memory
+            load_data()
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔄 Restored from backup: {timestamp}")
+            return {'success': True, 'restored': restored_files, 'timestamp': timestamp}
+        else:
+            return {'success': False, 'message': 'No backup files found for this timestamp'}
+            
+    except Exception as e:
+        print(f"[ERROR] Restore failed: {e}")
+        return {'success': False, 'message': str(e)}
 
 def cleanup_backups():
     """Keep only last 20 backups of each file"""
@@ -172,10 +265,12 @@ def cleanup_backups():
             old = os.path.join(BACKUP_DIR, files.pop(0))
             try:
                 os.remove(old)
+                print(f"[CLEANUP] Removed old backup: {old}")
             except:
                 pass
 
 def auto_save_worker():
+    """Auto-save data every 30 seconds if modified"""
     global _data_modified
     while True:
         time.sleep(30)
@@ -205,6 +300,25 @@ signal.signal(signal.SIGTERM, signal_handler)
 # ============================================================================
 # KEY FUNCTIONS
 # ============================================================================
+
+def generate_hwid():
+    """Generate a hardware ID from system info"""
+    # In a real app, this would use actual hardware IDs
+    # For demo, generate a unique ID
+    import subprocess
+    try:
+        # Try to get a semi-unique machine ID
+        if os.name == 'nt':  # Windows
+            result = subprocess.run(['wmic', 'csproduct', 'get', 'uuid'], 
+                                   capture_output=True, text=True)
+            return hashlib.md5(result.stdout.encode()).hexdigest().upper()
+        else:  # Linux/Mac
+            with open('/etc/machine-id', 'r') as f:
+                return hashlib.md5(f.read().encode()).hexdigest().upper()
+    except:
+        # Fallback to random but persistent ID
+        import uuid
+        return hashlib.md5(str(uuid.getnode()).encode()).hexdigest().upper()
 
 def generate_key(duration='7days'):
     """Generate new key - SAVES IMMEDIATELY"""
@@ -287,7 +401,12 @@ def validate_key(key, hwid):
 
 @app.route('/')
 def home():
-    return render_template_string(INDEX_HTML)
+    return jsonify({
+        'name': 'ATLAS Key System',
+        'status': 'online',
+        'version': '2.0',
+        'endpoints': ['/api/status', '/api/validate', '/api/profiles/<hwid>', '/admin']
+    })
 
 @app.route('/api/status')
 def status():
@@ -304,24 +423,42 @@ def status():
 def api_validate():
     data = request.json
     key = data.get('key', '')
-    hwid = data.get('hwid', 'unknown')
+    hwid = data.get('hwid', generate_hwid())
     return jsonify(validate_key(key, hwid))
 
 @app.route('/api/profiles/<hwid>', methods=['GET'])
 def get_profiles(hwid):
-    return jsonify(USER_PROFILES.get(hwid, {}))
+    """Get profiles for a specific HWID"""
+    return jsonify(USER_PROFILES.get(hwid, {
+        'primary': {'v': 50, 'l': 0, 'r': 0, 'sens': 1.0},
+        'secondary': {'v': 50, 'l': 0, 'r': 0, 'sens': 1.0}
+    }))
 
 @app.route('/api/profiles/<hwid>', methods=['POST'])
 def save_profiles(hwid):
+    """Save profiles for a specific HWID"""
     global _data_modified
     data = request.json
+    
+    # Validate the HWID has an active key
+    has_valid_key = False
+    for key_data in KEYS.values():
+        if key_data.get('hwid') == hwid and key_data.get('used'):
+            expiry = datetime.fromisoformat(key_data['expiry'])
+            if expiry > datetime.now():
+                has_valid_key = True
+                break
+    
+    if not has_valid_key:
+        return jsonify({'success': False, 'message': 'No valid key for this HWID'}), 403
+    
     USER_PROFILES[hwid] = data
     _data_modified = True
     save_data(force=True)
-    return jsonify({'success': True})
+    return jsonify({'success': True, 'message': 'Profiles saved'})
 
 # ============================================================================
-# ADMIN PANEL
+# ADMIN PANEL WITH FULL BACKUP MANAGEMENT
 # ============================================================================
 
 @app.route('/admin')
@@ -385,199 +522,164 @@ def admin_delete(key):
         return jsonify({'success': True})
     return jsonify({'success': False}), 404
 
-@app.route('/admin/api/backup', methods=['POST'])
-def admin_backup():
+# ============================================================================
+# NEW BACKUP MANAGEMENT ROUTES
+# ============================================================================
+
+@app.route('/admin/api/backup/list', methods=['GET'])
+def admin_backup_list():
+    """Get list of all backups"""
+    auth = request.authorization
+    if not auth or auth.username != ADMIN_USER or auth.password != ADMIN_PASS:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    backups = get_backup_list()
+    return jsonify({'success': True, 'backups': backups})
+
+@app.route('/admin/api/backup/create', methods=['POST'])
+def admin_backup_create():
+    """Create a new backup"""
     auth = request.authorization
     if not auth or auth.username != ADMIN_USER or auth.password != ADMIN_PASS:
         return jsonify({'error': 'Unauthorized'}), 401
 
     try:
-        create_backup()
+        # Save current data first
         save_data(force=True)
-        return jsonify({'success': True, 'message': 'Backup created'})
+        
+        # Create backup
+        result = create_backup()
+        return jsonify(result)
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
-# ============================================================================
-# HTML TEMPLATES
-# ============================================================================
+@app.route('/admin/api/backup/restore/<timestamp>', methods=['POST'])
+def admin_backup_restore(timestamp):
+    """Restore from a specific backup"""
+    auth = request.authorization
+    if not auth or auth.username != ADMIN_USER or auth.password != ADMIN_PASS:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    try:
+        # Create a pre-restore backup first (safety)
+        create_backup()
+        
+        # Restore from specified backup
+        result = restore_backup(timestamp)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
 
-INDEX_HTML = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ATLAS | Key System</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
-        :root { --primary: #6366f1; --primary-dark: #4f46e5; --bg: #0a0a0f; --surface: #141418; --text: #f1f1f4; --text-muted: #6b6b7b; --success: #22c55e; --error: #ef4444; }
-        body { background: var(--bg); color: var(--text); min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 20px; }
-        .container { width: 100%; max-width: 480px; background: var(--surface); border-radius: 24px; border: 1px solid rgba(255,255,255,0.06); overflow: hidden; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); }
-        .header { background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%); padding: 40px 30px; text-align: center; }
-        .logo { font-size: 32px; font-weight: 800; letter-spacing: 4px; margin-bottom: 8px; }
-        .tagline { font-size: 12px; opacity: 0.8; letter-spacing: 2px; text-transform: uppercase; }
-        .content { padding: 30px; }
-        .status-bar { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 12px; background: rgba(34, 197, 94, 0.1); border-radius: 12px; margin-bottom: 24px; font-size: 12px; color: var(--success); }
-        .status-bar.offline { background: rgba(239, 68, 68, 0.1); color: var(--error); }
-        .status-dot { width: 8px; height: 8px; background: currentColor; border-radius: 50%; animation: pulse 2s infinite; }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-        .section-title { font-size: 11px; text-transform: uppercase; letter-spacing: 2px; color: var(--text-muted); margin-bottom: 12px; font-weight: 600; }
-        .key-input { width: 100%; padding: 16px 20px; background: var(--bg); border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; color: var(--text); font-size: 18px; letter-spacing: 4px; text-align: center; text-transform: uppercase; transition: all 0.3s; outline: none; }
-        .key-input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1); }
-        .btn { width: 100%; padding: 16px; background: var(--primary); color: white; border: none; border-radius: 16px; font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 12px; text-transform: uppercase; letter-spacing: 1px; }
-        .btn:hover { background: var(--primary-dark); transform: translateY(-2px); }
-        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-        .message { margin-top: 16px; padding: 16px; border-radius: 12px; font-size: 13px; text-align: center; display: none; }
-        .message.show { display: block; }
-        .message.success { background: rgba(34, 197, 94, 0.1); color: var(--success); border: 1px solid rgba(34, 197, 94, 0.2); }
-        .message.error { background: rgba(239, 68, 68, 0.1); color: var(--error); border: 1px solid rgba(239, 68, 68, 0.2); }
-        .key-info { background: var(--bg); border-radius: 16px; padding: 20px; margin-top: 16px; display: none; }
-        .key-info.show { display: block; }
-        .info-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 13px; }
-        .info-label { color: var(--text-muted); }
-        .info-value { color: var(--text); font-weight: 600; }
-        .footer { text-align: center; padding: 20px; font-size: 11px; color: var(--text-muted); border-top: 1px solid rgba(255,255,255,0.05); }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <div class="logo">ATLAS</div>
-            <div class="tagline">Key Authentication System</div>
-        </div>
-        <div class="content">
-            <div class="status-bar" id="statusBar">
-                <div class="status-dot"></div>
-                <span id="statusText">Connecting...</span>
-            </div>
-            <div class="section">
-                <div class="section-title">Enter License Key</div>
-                <input type="text" class="key-input" id="keyInput" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX" maxlength="35">
-                <button class="btn" id="validateBtn" onclick="validateKey()">Validate Key</button>
-                <div class="message" id="message"></div>
-                <div class="key-info" id="keyInfo">
-                    <div class="info-row"><span class="info-label">Status</span><span class="info-value" style="color: var(--success)">Active</span></div>
-                    <div class="info-row"><span class="info-label">Duration</span><span class="info-value" id="infoDuration">7 Days</span></div>
-                    <div class="info-row"><span class="info-label">Time Remaining</span><span class="info-value" id="infoTime">6 days</span></div>
-                    <div class="info-row"><span class="info-label">Activations</span><span class="info-value" id="infoActivations">1</span></div>
-                </div>
-            </div>
-        </div>
-        <div class="footer">Secure Cloud Authentication • HWID Protected</div>
-    </div>
-    <script>
-        const keyInput = document.getElementById('keyInput');
-        keyInput.addEventListener('input', (e) => {
-            let value = e.target.value.replace(/-/g, '').toUpperCase();
-            let formatted = '';
-            for (let i = 0; i < value.length && i < 24; i++) {
-                if (i > 0 && i % 4 === 0) formatted += '-';
-                formatted += value[i];
-            }
-            e.target.value = formatted;
-        });
-        async function checkStatus() {
-            try {
-                const res = await fetch('/api/status');
-                const data = await res.json();
-                document.getElementById('statusBar').className = 'status-bar';
-                document.getElementById('statusText').textContent = `Server Online • ${data.keys_total} keys`;
-            } catch {
-                document.getElementById('statusBar').className = 'status-bar offline';
-                document.getElementById('statusText').textContent = 'Server Offline';
-            }
-        }
-        checkStatus();
-        setInterval(checkStatus, 10000);
-        async function validateKey() {
-            const key = keyInput.value.trim();
-            if (key.length < 24) {
-                showMessage('Please enter complete key', 'error');
-                return;
-            }
-            const hwid = Math.random().toString(36).substring(2, 15);
-            const res = await fetch('/api/validate', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({key: key, hwid: hwid})
-            });
-            const data = await res.json();
-            if (data.valid) {
-                showMessage('✓ Key validated', 'success');
-                showKeyInfo(data);
-            } else {
-                showMessage('✗ ' + data.message, 'error');
-            }
-        }
-        function showMessage(text, type) {
-            const msg = document.getElementById('message');
-            msg.textContent = text;
-            msg.className = 'message ' + type + ' show';
-            setTimeout(() => msg.classList.remove('show'), 5000);
-        }
-        function showKeyInfo(data) {
-            const info = document.getElementById('keyInfo');
-            const durationMap = {'1hour': '1 Hour', '1day': '1 Day', '7days': '7 Days', '30days': '30 Days', '365days': '1 Year', 'lifetime': 'Lifetime'};
-            document.getElementById('infoDuration').textContent = durationMap[data.duration] || data.duration;
-            let timeText = data.days_left > 0 ? data.days_left + ' days' : (data.hours_left ? data.hours_left + ' hours' : 'Expired');
-            document.getElementById('infoTime').textContent = timeText;
-            document.getElementById('infoActivations').textContent = data.activations;
-            info.classList.add('show');
-        }
-    </script>
-</body>
-</html>
-"""
+@app.route('/admin/api/backup/download/<timestamp>', methods=['GET'])
+def admin_backup_download(timestamp):
+    """Download all backup files for a timestamp as ZIP"""
+    auth = request.authorization
+    if not auth or auth.username != ADMIN_USER or auth.password != ADMIN_PASS:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    try:
+        # Create ZIP file in memory
+        memory_file = io.BytesIO()
+        with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+            # Find all backup files with this timestamp
+            for filename in ['keys.json', 'profiles.json', 'stats.json']:
+                backup_file = os.path.join(BACKUP_DIR, f"{filename}.{timestamp}")
+                if os.path.exists(backup_file):
+                    zf.write(backup_file, arcname=filename)
+        
+        memory_file.seek(0)
+        
+        return send_file(
+            memory_file,
+            download_name=f'atlas_backup_{timestamp}.zip',
+            as_attachment=True,
+            mimetype='application/zip'
+        )
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ============================================================================
+# UPDATED ADMIN HTML WITH BACKUP BROWSER
+# ============================================================================
 
 ADMIN_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>ATLAS Admin</title>
+    <title>ATLAS Admin - Full Backup Management</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'SF Pro Display', -apple-system, sans-serif; }
         body { background: #0a0a0f; color: #f1f1f4; padding: 20px; line-height: 1.6; }
-        .container { max-width: 1200px; margin: 0 auto; }
+        .container { max-width: 1400px; margin: 0 auto; }
         h1 { font-size: 28px; background: linear-gradient(135deg, #6366f1, #8b5cf6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
         .subtitle { color: #6b6b7b; margin-bottom: 30px; }
+        
         .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 30px; }
         .stat-card { background: #141418; border: 1px solid rgba(255,255,255,0.06); border-radius: 16px; padding: 24px; text-align: center; }
         .stat-value { font-size: 36px; font-weight: 700; color: #6366f1; }
         .stat-label { font-size: 12px; color: #6b6b7b; text-transform: uppercase; }
+        
         .panel { background: #141418; border: 1px solid rgba(255,255,255,0.06); border-radius: 16px; padding: 24px; margin-bottom: 20px; }
         .panel h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 2px; color: #6b6b7b; margin-bottom: 20px; }
+        
         .form-row { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
         input, select { flex: 1; min-width: 150px; padding: 12px 16px; background: #0a0a0f; border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; color: #f1f1f4; }
-        button { padding: 12px 24px; background: #6366f1; color: white; border: none; border-radius: 12px; font-weight: 600; cursor: pointer; }
-        button:hover { background: #4f46e5; }
-        button.secondary { background: rgba(255,255,255,0.1); }
+        
+        button { padding: 12px 24px; background: #6366f1; color: white; border: none; border-radius: 12px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+        button:hover { background: #4f46e5; transform: translateY(-2px); }
+        button.secondary { background: #2a2a35; }
+        button.secondary:hover { background: #3a3a45; }
         button.danger { background: #ef4444; }
-        .key-list { max-height: 500px; overflow-y: auto; border-radius: 12px; background: #0a0a0f; }
+        button.danger:hover { background: #dc2626; }
+        button.success { background: #22c55e; }
+        button.success:hover { background: #16a34a; }
+        
+        .key-list { max-height: 400px; overflow-y: auto; border-radius: 12px; background: #0a0a0f; }
         .key-item { display: flex; justify-content: space-between; align-items: center; padding: 16px; border-bottom: 1px solid rgba(255,255,255,0.05); }
         .key-code { font-family: monospace; font-size: 14px; color: #6366f1; }
         .key-meta { font-size: 12px; color: #6b6b7b; }
+        
         .badge { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 600; margin-left: 8px; }
         .badge-unused { background: rgba(34, 197, 94, 0.2); color: #22c55e; }
         .badge-used { background: rgba(245, 158, 11, 0.2); color: #f59e0b; }
         .badge-expired { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
-        .generated-keys { background: #0a0a0f; border-radius: 12px; padding: 16px; margin-top: 16px; font-family: monospace; display: none; }
+        
+        .generated-keys { background: #0a0a0f; border-radius: 12px; padding: 16px; margin-top: 16px; font-family: monospace; display: none; max-height: 200px; overflow-y: auto; }
         .generated-keys.show { display: block; }
+        
+        /* Backup browser styles */
+        .backup-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; margin-top: 20px; }
+        .backup-card { background: #0a0a0f; border: 1px solid rgba(99, 102, 241, 0.3); border-radius: 12px; padding: 16px; transition: all 0.2s; }
+        .backup-card:hover { border-color: #6366f1; box-shadow: 0 0 20px rgba(99, 102, 241, 0.2); transform: translateY(-2px); }
+        .backup-timestamp { font-size: 16px; font-weight: 600; color: #6366f1; margin-bottom: 8px; }
+        .backup-files { font-size: 12px; color: #6b6b7b; margin-bottom: 12px; }
+        .backup-actions { display: flex; gap: 8px; }
+        .backup-actions button { flex: 1; padding: 8px; font-size: 12px; }
+        
+        .status-message { padding: 12px; border-radius: 8px; margin-top: 12px; display: none; }
+        .status-success { background: rgba(34, 197, 94, 0.2); color: #22c55e; border: 1px solid #22c55e; }
+        .status-error { background: rgba(239, 68, 68, 0.2); color: #ef4444; border: 1px solid #ef4444; }
+        .status-info { background: rgba(99, 102, 241, 0.2); color: #6366f1; border: 1px solid #6366f1; }
+        
+        .loading-spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #6366f1; border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>ATLAS Admin</h1>
-        <p class="subtitle">Key Management Dashboard</p>
+        <h1>⚡ ATLAS Admin v2.0</h1>
+        <p class="subtitle">Complete Key & Backup Management System</p>
+        
         <div class="stats-grid">
             <div class="stat-card"><div class="stat-value" id="statTotal">0</div><div class="stat-label">Total Keys</div></div>
             <div class="stat-card"><div class="stat-value" id="statUsed">0</div><div class="stat-label">Used</div></div>
             <div class="stat-card"><div class="stat-value" id="statAvailable">0</div><div class="stat-label">Available</div></div>
             <div class="stat-card"><div class="stat-value" id="statExpired">0</div><div class="stat-label">Expired</div></div>
         </div>
+        
         <div class="panel">
-            <h2>Generate Keys</h2>
+            <h2>🔑 Generate Keys</h2>
             <div class="form-row">
                 <input type="number" id="genCount" value="5" min="1" max="100">
                 <select id="genDuration">
@@ -592,20 +694,126 @@ ADMIN_HTML = """
             </div>
             <div class="generated-keys" id="generatedBox"></div>
         </div>
+        
         <div class="panel">
-            <h2>Data Safety</h2>
+            <h2>💾 Full Backup Management</h2>
             <div class="form-row">
-                <button class="secondary" onclick="backupNow()">🛡️ Backup Now</button>
-                <button class="secondary" onclick="loadKeys()">Refresh</button>
+                <button class="success" onclick="createBackup()">📀 Create New Backup</button>
+                <button class="secondary" onclick="loadBackups()">🔄 Refresh Backup List</button>
             </div>
-            <div id="backupStatus" style="margin-top:10px;font-size:12px;color:#6b6b7b;"></div>
+            <div id="backupStatus" class="status-message"></div>
+            <div id="backupList" class="backup-grid">
+                <!-- Backups will be loaded here -->
+                <div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #6b6b7b;">
+                    Click refresh to load backups
+                </div>
+            </div>
         </div>
+        
         <div class="panel">
-            <h2>All Keys</h2>
+            <h2>🔐 All Keys</h2>
             <div class="key-list" id="keyList"></div>
         </div>
     </div>
+    
     <script>
+        // ====================================================================
+        // BACKUP MANAGEMENT
+        // ====================================================================
+        
+        async function loadBackups() {
+            const listDiv = document.getElementById('backupList');
+            listDiv.innerHTML = '<div style="grid-column: 1/-1; text-align: center; padding: 40px;"><span class="loading-spinner"></span> Loading backups...</div>';
+            
+            try {
+                const res = await fetch('/admin/api/backup/list');
+                const data = await res.json();
+                
+                if (data.success && data.backups.length > 0) {
+                    listDiv.innerHTML = data.backups.map(backup => `
+                        <div class="backup-card">
+                            <div class="backup-timestamp">📅 ${backup.timestamp}</div>
+                            <div class="backup-files">
+                                ${backup.files.map(f => `📄 ${f.type}`).join(' • ')}
+                            </div>
+                            <div class="backup-actions">
+                                <button class="secondary" onclick="restoreBackup('${backup.id}')">🔄 Restore</button>
+                                <button class="secondary" onclick="downloadBackup('${backup.id}')">⬇️ Download</button>
+                            </div>
+                        </div>
+                    `).join('');
+                } else {
+                    listDiv.innerHTML = '<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #6b6b7b;">📁 No backups found. Create your first backup!</div>';
+                }
+            } catch (error) {
+                listDiv.innerHTML = '<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #ef4444;">❌ Error loading backups</div>';
+            }
+        }
+        
+        async function createBackup() {
+            const status = document.getElementById('backupStatus');
+            status.className = 'status-message status-info';
+            status.innerHTML = '<span class="loading-spinner"></span> Creating backup...';
+            status.style.display = 'block';
+            
+            try {
+                const res = await fetch('/admin/api/backup/create', {method: 'POST'});
+                const data = await res.json();
+                
+                if (data.success) {
+                    status.className = 'status-message status-success';
+                    status.innerHTML = '✅ Backup created successfully!';
+                    loadBackups(); // Refresh the list
+                    setTimeout(() => status.style.display = 'none', 3000);
+                } else {
+                    status.className = 'status-message status-error';
+                    status.innerHTML = '❌ ' + (data.message || 'Backup failed');
+                }
+            } catch (error) {
+                status.className = 'status-message status-error';
+                status.innerHTML = '❌ Connection error';
+            }
+        }
+        
+        async function restoreBackup(timestamp) {
+            if (!confirm('⚠️ WARNING: This will overwrite CURRENT data with the backup. Continue?')) {
+                return;
+            }
+            
+            const status = document.getElementById('backupStatus');
+            status.className = 'status-message status-info';
+            status.innerHTML = '<span class="loading-spinner"></span> Restoring backup...';
+            status.style.display = 'block';
+            
+            try {
+                const res = await fetch(`/admin/api/backup/restore/${timestamp}`, {method: 'POST'});
+                const data = await res.json();
+                
+                if (data.success) {
+                    status.className = 'status-message status-success';
+                    status.innerHTML = `✅ Restored ${data.restored.join(', ')} from backup!`;
+                    loadStats();
+                    loadKeys();
+                    loadBackups();
+                    setTimeout(() => status.style.display = 'none', 3000);
+                } else {
+                    status.className = 'status-message status-error';
+                    status.innerHTML = '❌ ' + (data.message || 'Restore failed');
+                }
+            } catch (error) {
+                status.className = 'status-message status-error';
+                status.innerHTML = '❌ Connection error';
+            }
+        }
+        
+        async function downloadBackup(timestamp) {
+            window.location.href = `/admin/api/backup/download/${timestamp}`;
+        }
+        
+        // ====================================================================
+        // KEY MANAGEMENT
+        // ====================================================================
+        
         async function loadStats() {
             const res = await fetch('/admin/api/stats');
             const data = await res.json();
@@ -614,51 +822,82 @@ ADMIN_HTML = """
             document.getElementById('statAvailable').textContent = data.available;
             document.getElementById('statExpired').textContent = data.expired;
         }
+        
         async function generateKeys() {
             const count = document.getElementById('genCount').value;
             const duration = document.getElementById('genDuration').value;
+            
             const res = await fetch('/admin/api/generate', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({count: parseInt(count), duration: duration})
             });
+            
             const data = await res.json();
+            
             const box = document.getElementById('generatedBox');
-            box.innerHTML = data.keys.join('<br>');
+            box.innerHTML = data.keys.map(k => `<div style="color: #22c55e; padding: 4px;">✅ ${k}</div>`).join('');
             box.classList.add('show');
+            
             loadStats();
             loadKeys();
         }
-        async function backupNow() {
-            const status = document.getElementById('backupStatus');
-            status.textContent = 'Creating backup...';
-            const res = await fetch('/admin/api/backup', {method: 'POST'});
-            const data = await res.json();
-            status.textContent = data.success ? '✅ Backup created!' : '❌ Backup failed';
-            setTimeout(() => status.textContent = '', 3000);
-        }
+        
         async function loadKeys() {
             const res = await fetch('/admin/api/keys');
             const keys = await res.json();
+            
             const list = document.getElementById('keyList');
-            list.innerHTML = Object.entries(keys).sort((a,b) => new Date(b[1].created) - new Date(a[1].created)).map(([key, data]) => {
-                const now = new Date();
-                const expiry = new Date(data.expiry);
-                const isExpired = expiry < now;
-                let status = data.used ? (isExpired ? 'expired' : 'used') : 'unused';
-                let statusText = data.used ? (isExpired ? 'Expired' : 'Active') : 'Unused';
-                return `<div class="key-item"><div class="key-info"><div class="key-code">${key} <span class="badge badge-${status}">${statusText}</span></div><div class="key-meta">Created: ${new Date(data.created).toLocaleDateString()} | Expires: ${expiry.toLocaleDateString()}</div></div><button class="danger" onclick="deleteKey('${key}')">Delete</button></div>`;
-            }).join('');
+            const now = new Date();
+            
+            list.innerHTML = Object.entries(keys)
+                .sort((a, b) => new Date(b[1].created) - new Date(a[1].created))
+                .map(([key, data]) => {
+                    const expiry = new Date(data.expiry);
+                    const isExpired = expiry < now;
+                    let status = data.used ? (isExpired ? 'expired' : 'used') : 'unused';
+                    let statusText = data.used ? (isExpired ? 'Expired' : 'Active') : 'Unused';
+                    
+                    return `
+                        <div class="key-item">
+                            <div>
+                                <div class="key-code">
+                                    ${key} 
+                                    <span class="badge badge-${status}">${statusText}</span>
+                                </div>
+                                <div class="key-meta">
+                                    Created: ${new Date(data.created).toLocaleString()} | 
+                                    Expires: ${expiry.toLocaleString()}
+                                    ${data.hwid ? ` | HWID: ${data.hwid.substring(0, 8)}...` : ''}
+                                </div>
+                            </div>
+                            <button class="danger" onclick="deleteKey('${key}')">Delete</button>
+                        </div>
+                    `;
+                }).join('');
         }
+        
         async function deleteKey(key) {
             if (!confirm('Delete this key?')) return;
             await fetch('/admin/api/delete/' + key, {method: 'DELETE'});
             loadKeys();
             loadStats();
         }
+        
+        // ====================================================================
+        // INITIALIZATION
+        // ====================================================================
+        
+        // Load everything on page load
         loadStats();
         loadKeys();
-        setInterval(() => { loadStats(); loadKeys(); }, 30000);
+        loadBackups();
+        
+        // Auto-refresh every 30 seconds
+        setInterval(() => {
+            loadStats();
+            loadKeys();
+        }, 30000);
     </script>
 </body>
 </html>
@@ -675,17 +914,17 @@ if __name__ == '__main__':
     threading.Thread(target=auto_save_worker, daemon=True).start()
 
     port = int(os.environ.get('PORT', 10000))
-    print(f"\n🚀 ATLAS Key System (BULLETPROOF) starting on port {port}")
+    print(f"\n🚀 ATLAS Key System (BACKUP EDITION) starting on port {port}")
     print(f"📊 Admin panel: http://localhost:{port}/admin")
     print(f"🔑 Default admin: {ADMIN_USER} / {'*' * len(ADMIN_PASS)}")
     print(f"💾 Data directory: {BASE_DIR}")
     print(f"📁 Backup directory: {BACKUP_DIR}")
-    print(f"\n⚡ PERSISTENCE FEATURES:")
-    print(f"   ✓ Immediate save on every change")
-    print(f"   ✓ Atomic file writes (crash-proof)")
-    print(f"   ✓ Automatic .bak files")
-    print(f"   ✓ Graceful shutdown handling")
-    print(f"   ✓ Corruption auto-recovery")
+    print(f"\n⚡ BACKUP FEATURES:")
+    print(f"   ✓ Create backups with one click")
+    print(f"   ✓ List all available backups")
+    print(f"   ✓ RESTORE from any backup")
+    print(f"   ✓ Download backups as ZIP")
+    print(f"   ✓ Automatic cleanup (keep last 20)")
     print(f"\nPress Ctrl+C to stop (data will be saved)\n")
 
     try:
