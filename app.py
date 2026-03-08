@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-ATLAS KEY SYSTEM - ULTIMATE EDITION
+ATLAS KEY SYSTEM - ULTIMATE EDITION - FULLY FIXED
 Features: 
 - Full key management with bulk operations
 - Advanced backup system with metadata
 - Delete all keys functionality
 - Delete individual backups + delete all backups
 - Separate tabs for better organization
+- NO DUPLICATE ROUTES - All endpoints defined once
 """
 
 import os
@@ -21,8 +22,8 @@ import shutil
 import atexit
 import glob
 from datetime import datetime, timedelta
-from flask import Flask, render_template, render_template_string, jsonify, request, session, redirect, send_file
-from flask_cors import CORS
+from flask import Flask, render_template, render_template_string, jsonify, request, session, redirect, send_file, make_response
+from flask_cors import CORS, cross_origin
 from functools import wraps
 import zipfile
 import io
@@ -30,30 +31,11 @@ import io
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 
-# Enable CORS for all origins
+# Enhanced CORS configuration
 CORS(app, resources={
     r"/api/*": {
-        "origins": "*",
-        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization"]
-    }
-})
-
-@app.after_request
-def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-    return response
-
-# Add this near the top with your other imports
-from flask import Flask, render_template, render_template_string, jsonify, request, session, redirect, make_response
-from flask_cors import CORS, cross_origin
-
-# Update your CORS configuration - replace your existing CORS line with this:
-CORS(app, resources={
-    r"/api/*": {
-        "origins": ["http://localhost", "http://127.0.0.1", "http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:5000", "http://127.0.0.1:5000", "*"],
+        "origins": ["http://localhost", "http://127.0.0.1", "http://localhost:3000", 
+                   "http://127.0.0.1:3000", "http://localhost:5000", "http://127.0.0.1:5000", "*"],
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         "allow_headers": ["Content-Type", "Authorization", "X-Requested-With"],
         "expose_headers": ["Content-Type", "Authorization"],
@@ -61,57 +43,15 @@ CORS(app, resources={
     }
 })
 
-# Replace your existing after_request with this enhanced version:
 @app.after_request
 def after_request(response):
+    """Add CORS headers to all responses"""
     response.headers.add('Access-Control-Allow-Origin', '*')
     response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With')
     response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
     response.headers.add('Access-Control-Allow-Credentials', 'true')
     response.headers.add('Access-Control-Max-Age', '3600')
     return response
-
-# Add OPTIONS handling for preflight requests
-@app.route('/api/validate', methods=['OPTIONS'])
-@cross_origin()
-def handle_options():
-    response = make_response()
-    response.headers.add("Access-Control-Allow-Origin", "*")
-    response.headers.add('Access-Control-Allow-Headers', "*")
-    response.headers.add('Access-Control-Allow-Methods', "*")
-    return response
-
-# Update your validate endpoint to be more robust:
-@app.route('/api/validate', methods=['POST', 'OPTIONS'])
-@cross_origin()
-def api_validate():
-    # Handle preflight OPTIONS request
-    if request.method == 'OPTIONS':
-        response = make_response()
-        response.headers.add("Access-Control-Allow-Origin", "*")
-        response.headers.add('Access-Control-Allow-Headers', "*")
-        response.headers.add('Access-Control-Allow-Methods', "*")
-        return response
-    
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({'valid': False, 'message': 'No data provided'}), 400
-            
-        key = data.get('key', '').strip().upper()
-        hwid = data.get('hwid', generate_hwid())
-        
-        # Debug logging
-        print(f"[API] Validate attempt - Key: {key}, HWID: {hwid}")
-        
-        result = validate_key(key, hwid)
-        print(f"[API] Result: {result}")
-        
-        return jsonify(result)
-        
-    except Exception as e:
-        print(f"[API ERROR] {str(e)}")
-        return jsonify({'valid': False, 'message': 'Server error'}), 500
 
 # ============================================================================
 # DATA STORAGE
@@ -549,7 +489,7 @@ def validate_key(key, hwid):
     }
 
 # ============================================================================
-# FLASK ROUTES
+# FIXED FLASK ROUTES - NO DUPLICATES
 # ============================================================================
 
 @app.route('/')
@@ -572,15 +512,53 @@ def status():
         'generations': STATS.get('generations', 0)
     })
 
-@app.route('/api/validate', methods=['POST'])
+# ============================================================================
+# FIXED VALIDATE ENDPOINT - SINGLE DEFINITION
+# ============================================================================
+@app.route('/api/validate', methods=['POST', 'OPTIONS'])
+@cross_origin()
 def api_validate():
-    data = request.json
-    key = data.get('key', '')
-    hwid = data.get('hwid', generate_hwid())
-    return jsonify(validate_key(key, hwid))
+    """
+    Validate license key and bind to HWID
+    Handles both POST requests and OPTIONS preflight
+    """
+    # Handle preflight OPTIONS request
+    if request.method == 'OPTIONS':
+        response = make_response()
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        response.headers.add('Access-Control-Allow-Headers', "Content-Type,Authorization,X-Requested-With")
+        response.headers.add('Access-Control-Allow-Methods', "POST, OPTIONS")
+        response.headers.add('Access-Control-Allow-Credentials', "true")
+        response.headers.add('Access-Control-Max-Age', "3600")
+        return response
+    
+    # Handle POST request (actual validation)
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'valid': False, 'message': 'No data provided'}), 400
+            
+        key = data.get('key', '').strip().upper()
+        hwid = data.get('hwid', generate_hwid())
+        
+        # Debug logging
+        print(f"[API] Validate attempt - Key: {key}, HWID: {hwid}")
+        
+        result = validate_key(key, hwid)
+        print(f"[API] Result: {result}")
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        print(f"[API ERROR] {str(e)}")
+        return jsonify({'valid': False, 'message': 'Server error'}), 500
 
+# ============================================================================
+# PROFILE ENDPOINTS
+# ============================================================================
 @app.route('/api/profiles/<hwid>', methods=['GET'])
 def get_profiles(hwid):
+    """Get profiles for a specific HWID"""
     return jsonify(USER_PROFILES.get(hwid, {
         'primary': {'v': 50, 'l': 0, 'r': 0, 'sens': 1.0},
         'secondary': {'v': 50, 'l': 0, 'r': 0, 'sens': 1.0}
@@ -588,6 +566,7 @@ def get_profiles(hwid):
 
 @app.route('/api/profiles/<hwid>', methods=['POST'])
 def save_profiles(hwid):
+    """Save profiles for a specific HWID"""
     global _data_modified
     data = request.json
     
@@ -609,9 +588,8 @@ def save_profiles(hwid):
     return jsonify({'success': True, 'message': 'Profiles saved'})
 
 # ============================================================================
-# ENHANCED ADMIN PANEL WITH TABS
+# ADMIN ROUTES
 # ============================================================================
-
 @app.route('/admin')
 def admin_login():
     auth = request.authorization
@@ -681,9 +659,8 @@ def admin_delete(key):
     return jsonify({'success': False}), 404
 
 # ============================================================================
-# ENHANCED BACKUP ROUTES
+# BACKUP ROUTES
 # ============================================================================
-
 @app.route('/admin/api/backup/list', methods=['GET'])
 def admin_backup_list():
     auth = request.authorization
@@ -774,7 +751,7 @@ def admin_backup_download(timestamp):
         return jsonify({'error': str(e)}), 500
 
 # ============================================================================
-# ULTIMATE ADMIN HTML WITH TABS
+# ADMIN HTML (keep as is - it's long but working)
 # ============================================================================
 
 ADMIN_HTML = """
@@ -1454,20 +1431,26 @@ if __name__ == '__main__':
     if len(get_backup_list()) == 0:
         create_backup("Initial system backup")
 
-    threading.Thread(target=lambda: None, daemon=True).start()
+    # Start auto-save thread
+    def auto_save_worker():
+        while True:
+            time.sleep(30)
+            if _data_modified:
+                save_data()
+    
+    threading.Thread(target=auto_save_worker, daemon=True).start()
 
     port = int(os.environ.get('PORT', 10000))
     print(f"\n🚀 ATLAS ULTIMATE starting on port {port}")
     print(f"📊 Admin panel: http://localhost:{port}/admin")
     print(f"🔑 Default admin: {ADMIN_USER} / {'*' * len(ADMIN_PASS)}")
-    print(f"\n⚡ NEW FEATURES:")
+    print(f"\n⚡ FEATURES:")
     print(f"   ✓ Separate tabs for Dashboard, Keys, Backups")
     print(f"   ✓ Delete ALL keys with confirmation")
     print(f"   ✓ Delete individual backups")
     print(f"   ✓ Delete ALL backups")
     print(f"   ✓ Backup metadata with descriptions")
     print(f"   ✓ Key search and filtering")
-    print(f"   ✓ Detailed key statistics")
     print(f"\nPress Ctrl+C to stop (data will be saved)\n")
 
     try:
