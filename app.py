@@ -46,6 +46,73 @@ def after_request(response):
     response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
     return response
 
+# Add this near the top with your other imports
+from flask import Flask, render_template, render_template_string, jsonify, request, session, redirect, make_response
+from flask_cors import CORS, cross_origin
+
+# Update your CORS configuration - replace your existing CORS line with this:
+CORS(app, resources={
+    r"/api/*": {
+        "origins": ["http://localhost", "http://127.0.0.1", "http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:5000", "http://127.0.0.1:5000", "*"],
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization", "X-Requested-With"],
+        "expose_headers": ["Content-Type", "Authorization"],
+        "supports_credentials": True
+    }
+})
+
+# Replace your existing after_request with this enhanced version:
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    response.headers.add('Access-Control-Allow-Credentials', 'true')
+    response.headers.add('Access-Control-Max-Age', '3600')
+    return response
+
+# Add OPTIONS handling for preflight requests
+@app.route('/api/validate', methods=['OPTIONS'])
+@cross_origin()
+def handle_options():
+    response = make_response()
+    response.headers.add("Access-Control-Allow-Origin", "*")
+    response.headers.add('Access-Control-Allow-Headers', "*")
+    response.headers.add('Access-Control-Allow-Methods', "*")
+    return response
+
+# Update your validate endpoint to be more robust:
+@app.route('/api/validate', methods=['POST', 'OPTIONS'])
+@cross_origin()
+def api_validate():
+    # Handle preflight OPTIONS request
+    if request.method == 'OPTIONS':
+        response = make_response()
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        response.headers.add('Access-Control-Allow-Headers', "*")
+        response.headers.add('Access-Control-Allow-Methods', "*")
+        return response
+    
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'valid': False, 'message': 'No data provided'}), 400
+            
+        key = data.get('key', '').strip().upper()
+        hwid = data.get('hwid', generate_hwid())
+        
+        # Debug logging
+        print(f"[API] Validate attempt - Key: {key}, HWID: {hwid}")
+        
+        result = validate_key(key, hwid)
+        print(f"[API] Result: {result}")
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        print(f"[API ERROR] {str(e)}")
+        return jsonify({'valid': False, 'message': 'Server error'}), 500
+
 # ============================================================================
 # DATA STORAGE
 # ============================================================================
