@@ -2,13 +2,14 @@
 """
 ATLAS KEY SYSTEM - ULTIMATE EDITION v4.0
 Features:
-- Individual key tabs with detailed views
+- Keys grouped by duration tabs (7 days, 1 day, 30 days, lifetime)
+- Click on any key to see detailed info
+- Real-time time remaining updates (auto-refreshes every minute)
 - HWID reset capability
 - Add time to existing keys
 - Universal time display (UTC)
 - Key status: used/expired/active
 - Cloud backups stored on server
-- Auto-backup rotation
 """
 
 import os
@@ -192,7 +193,12 @@ def get_key_stats():
     expired = 0
     active = 0
     lifetime = 0
+    duration_counts = {}
+    
     for k, data in KEYS.items():
+        duration = data.get('duration', 'unknown')
+        duration_counts[duration] = duration_counts.get(duration, 0) + 1
+        
         try:
             expiry = datetime.fromisoformat(data['expiry'])
             if data.get('duration') == 'lifetime':
@@ -210,7 +216,8 @@ def get_key_stats():
         'unused': total - used,
         'expired': expired,
         'active': active,
-        'lifetime': lifetime
+        'lifetime': lifetime,
+        'duration_counts': duration_counts
     }
 
 def delete_all_keys():
@@ -447,6 +454,18 @@ def format_time_remaining(expiry_date):
     else:
         return f"{minutes}m"
 
+def get_time_remaining_for_key(key):
+    """Get current time remaining for a specific key"""
+    if key not in KEYS:
+        return None
+    
+    data = KEYS[key]
+    if data.get('duration') == 'lifetime':
+        return 'LIFETIME'
+    
+    expiry = datetime.fromisoformat(data['expiry'])
+    return format_time_remaining(expiry)
+
 def generate_key(duration='7days'):
     """Generate new key"""
     global _data_modified
@@ -570,6 +589,33 @@ def reset_key_hwid(key):
     
     return {'success': True, 'message': 'HWID reset successfully'}
 
+def get_keys_by_duration():
+    """Group keys by their duration with real-time time remaining"""
+    keys_by_duration = {}
+    for key, data in KEYS.items():
+        duration = data.get('duration', 'unknown')
+        if duration not in keys_by_duration:
+            keys_by_duration[duration] = []
+        
+        # Add time remaining (real-time calculation)
+        data_copy = data.copy()
+        if duration != 'lifetime':
+            expiry = datetime.fromisoformat(data['expiry'])
+            data_copy['time_remaining'] = format_time_remaining(expiry)
+            data_copy['expiry_timestamp'] = expiry.timestamp()  # For client-side updates
+        else:
+            data_copy['time_remaining'] = 'LIFETIME'
+            data_copy['expiry_timestamp'] = None
+        
+        data_copy['key'] = key
+        keys_by_duration[duration].append(data_copy)
+    
+    # Sort keys within each duration by creation date (newest first)
+    for duration in keys_by_duration:
+        keys_by_duration[duration].sort(key=lambda x: x['created'], reverse=True)
+    
+    return keys_by_duration
+
 # ============================================================================
 # FLASK ROUTES
 # ============================================================================
@@ -588,6 +634,7 @@ def status():
     return jsonify({
         'online': True,
         'time': datetime.now().isoformat(),
+        'server_time': time.time(),  # Current server timestamp for sync
         'keys_total': len(KEYS),
         'keys_used': sum(1 for k in KEYS if KEYS[k].get('used')),
         'validations': STATS.get('validations', 0),
@@ -637,14 +684,54 @@ def api_validate():
 
 @app.route('/api/key/<key>', methods=['GET'])
 def get_key_details(key):
-    """Get details for a specific key"""
+    """Get details for a specific key with real-time time remaining"""
     if key in KEYS:
         data = KEYS[key].copy()
         data['key'] = key
-        expiry = datetime.fromisoformat(data['expiry'])
-        data['time_remaining'] = format_time_remaining(expiry)
+        if data.get('duration') != 'lifetime':
+            expiry = datetime.fromisoformat(data['expiry'])
+            data['time_remaining'] = format_time_remaining(expiry)
+            data['expiry_timestamp'] = expiry.timestamp()
+        else:
+            data['time_remaining'] = 'LIFETIME'
+            data['expiry_timestamp'] = None
         return jsonify(data)
     return jsonify({'error': 'Key not found'}), 404
+
+@app.route('/api/keys/by-duration', methods=['GET'])
+def get_keys_by_duration_endpoint():
+    """Get all keys grouped by duration with real-time time remaining"""
+    auth = request.authorization
+    if not auth or auth.username != ADMIN_USER or auth.password != ADMIN_PASS:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    return jsonify({
+        'success': True,
+        'server_time': time.time(),
+        'keys': get_keys_by_duration()
+    })
+
+@app.route('/api/keys/refresh-times', methods=['GET'])
+def refresh_key_times():
+    """Get updated time remaining for all keys (for real-time updates)"""
+    auth = request.authorization
+    if not auth or auth.username != ADMIN_USER or auth.password != ADMIN_PASS:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    key_times = {}
+    for key, data in KEYS.items():
+        if data.get('duration') != 'lifetime':
+            expiry = datetime.fromisoformat(data['expiry'])
+            key_times[key] = {
+                'time_remaining': format_time_remaining(expiry),
+                'expired': expiry < datetime.now()
+            }
+    
+    return jsonify({
+        'success': True,
+        'server_time': time.time(),
+        'key_times': key_times
+    })
 
 @app.route('/api/key/<key>/add-time', methods=['POST'])
 def api_add_time(key):
@@ -745,6 +832,8 @@ def admin_get_keys():
         if data.get('duration') != 'lifetime':
             expiry = datetime.fromisoformat(data['expiry'])
             keys_with_time[key]['time_remaining'] = format_time_remaining(expiry)
+        else:
+            keys_with_time[key]['time_remaining'] = 'LIFETIME'
     
     return jsonify(keys_with_time)
 
@@ -878,7 +967,7 @@ def admin_backup_download(timestamp):
         return jsonify({'error': str(e)}), 500
 
 # ============================================================================
-# ADMIN HTML - UPDATED WITH KEY TABS AND MANAGEMENT
+# ADMIN HTML - UPDATED WITH DURATION TABS AND REAL-TIME UPDATES
 # ============================================================================
 
 ADMIN_HTML = """
@@ -895,8 +984,8 @@ ADMIN_HTML = """
         h1 { font-size: 32px; background: linear-gradient(135deg, #9d4edd, #c77dff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 8px; }
         .subtitle { color: #6b6b7b; margin-bottom: 30px; }
         
-        /* Tab Navigation */
-        .tabs {
+        /* Main Tab Navigation */
+        .main-tabs {
             display: flex;
             gap: 4px;
             margin-bottom: 24px;
@@ -905,7 +994,7 @@ ADMIN_HTML = """
             border-radius: 16px;
             border: 1px solid rgba(255,255,255,0.06);
         }
-        .tab {
+        .main-tab {
             flex: 1;
             padding: 14px;
             text-align: center;
@@ -915,11 +1004,45 @@ ADMIN_HTML = """
             color: #a0a0b0;
             transition: all 0.2s;
         }
-        .tab:hover { background: rgba(255,255,255,0.05); color: white; }
-        .tab.active {
+        .main-tab:hover { background: rgba(255,255,255,0.05); color: white; }
+        .main-tab.active {
             background: linear-gradient(135deg, #9d4edd20, #6b2d8f20);
             color: #c77dff;
             border: 1px solid #9d4edd40;
+        }
+        
+        /* Duration Tabs (for keys) */
+        .duration-tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 20px;
+            overflow-x: auto;
+            padding: 5px 0;
+        }
+        .duration-tab {
+            padding: 10px 20px;
+            background: #2a2a35;
+            border-radius: 30px;
+            cursor: pointer;
+            white-space: nowrap;
+            font-size: 13px;
+            transition: all 0.2s;
+            border: 1px solid transparent;
+        }
+        .duration-tab:hover {
+            background: #3a3a45;
+        }
+        .duration-tab.active {
+            background: #9d4edd;
+            color: white;
+            border-color: #c77dff;
+        }
+        .duration-tab .count {
+            background: rgba(255,255,255,0.2);
+            padding: 2px 8px;
+            border-radius: 20px;
+            margin-left: 8px;
+            font-size: 11px;
         }
         
         /* Panels */
@@ -1005,66 +1128,91 @@ ADMIN_HTML = """
             min-width: 150px;
         }
         
-        /* Key Tabs */
-        .key-tabs-container {
-            margin-bottom: 20px;
+        /* Keys Grid */
+        .keys-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 16px;
+            margin-top: 20px;
         }
         
-        .key-tabs-scroll {
-            display: flex;
-            gap: 8px;
-            overflow-x: auto;
-            padding: 8px 0;
-            margin-bottom: 16px;
-            scrollbar-width: thin;
-            scrollbar-color: #9d4edd #2a2a35;
-        }
-        
-        .key-tabs-scroll::-webkit-scrollbar {
-            height: 6px;
-        }
-        
-        .key-tabs-scroll::-webkit-scrollbar-track {
-            background: #2a2a35;
-            border-radius: 10px;
-        }
-        
-        .key-tabs-scroll::-webkit-scrollbar-thumb {
-            background: #9d4edd;
-            border-radius: 10px;
-        }
-        
-        .key-tab {
-            padding: 10px 20px;
-            background: #2a2a35;
-            border-radius: 30px;
+        .key-card {
+            background: #0a0a0f;
+            border: 1px solid rgba(157, 78, 221, 0.3);
+            border-radius: 16px;
+            padding: 16px;
             cursor: pointer;
-            white-space: nowrap;
-            font-size: 13px;
             transition: all 0.2s;
-            border: 1px solid transparent;
+            position: relative;
+            overflow: hidden;
         }
         
-        .key-tab:hover {
-            background: #3a3a45;
+        .key-card:hover {
+            border-color: #9d4edd;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(157, 78, 221, 0.3);
         }
         
-        .key-tab.active {
-            background: #9d4edd;
-            color: white;
-            border-color: #c77dff;
+        .key-card.selected {
+            border-color: #9d4edd;
+            background: rgba(157, 78, 221, 0.1);
+            box-shadow: 0 0 20px rgba(157, 78, 221, 0.5);
         }
         
-        .key-tab.used { border-left: 3px solid #f59e0b; }
-        .key-tab.expired { border-left: 3px solid #ef4444; }
-        .key-tab.active.used { border-left: 3px solid #f59e0b; }
-        .key-tab.active.expired { border-left: 3px solid #ef4444; }
+        .key-card.unused { border-left: 4px solid #22c55e; }
+        .key-card.used { border-left: 4px solid #f59e0b; }
+        .key-card.active { border-left: 4px solid #818cf8; }
+        .key-card.expired { border-left: 4px solid #ef4444; }
+        .key-card.lifetime { border-left: 4px solid #9d4edd; }
+        
+        .key-code {
+            font-family: monospace;
+            font-size: 14px;
+            color: #9d4edd;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+        
+        .key-duration {
+            position: absolute;
+            top: 16px;
+            right: 16px;
+            padding: 4px 12px;
+            border-radius: 30px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        
+        .duration-1hour { background: rgba(99, 102, 241, 0.2); color: #818cf8; }
+        .duration-1day { background: rgba(34, 197, 94, 0.2); color: #22c55e; }
+        .duration-7days { background: rgba(245, 158, 11, 0.2); color: #f59e0b; }
+        .duration-30days { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
+        .duration-365days { background: rgba(157, 78, 221, 0.2); color: #c77dff; }
+        .duration-lifetime { background: rgba(157, 78, 221, 0.3); color: #c77dff; }
+        
+        .key-meta {
+            font-size: 12px;
+            color: #6b6b7b;
+            margin: 8px 0;
+        }
+        
+        .key-time-remaining {
+            font-size: 14px;
+            font-weight: 600;
+            color: #22c55e;
+            margin-top: 8px;
+        }
+        
+        .key-time-remaining.expired {
+            color: #ef4444;
+        }
         
         /* Key Detail Panel */
         .key-detail-panel {
             background: #0a0a0f;
             border-radius: 16px;
             padding: 24px;
+            margin-top: 20px;
             border: 1px solid rgba(157, 78, 221, 0.3);
         }
         
@@ -1079,7 +1227,7 @@ ADMIN_HTML = """
         
         .key-detail-code {
             font-family: monospace;
-            font-size: 24px;
+            font-size: 20px;
             color: #9d4edd;
             font-weight: 600;
         }
@@ -1143,133 +1291,6 @@ ADMIN_HTML = """
             margin-top: 20px;
         }
         
-        .key-list { 
-            max-height: 500px; 
-            overflow-y: auto; 
-            border-radius: 16px; 
-            background: #0a0a0f; 
-            display: none;
-        }
-        
-        .key-item { 
-            display: flex; 
-            justify-content: space-between; 
-            align-items: center; 
-            padding: 16px; 
-            border-bottom: 1px solid rgba(255,255,255,0.05); 
-        }
-        
-        .key-code { 
-            font-family: monospace; 
-            font-size: 14px; 
-            color: #9d4edd; 
-            font-weight: 600;
-        }
-        
-        .key-meta { 
-            font-size: 12px; 
-            color: #6b6b7b; 
-            margin-top: 4px; 
-        }
-        
-        .badge {
-            display: inline-block;
-            padding: 4px 12px;
-            border-radius: 100px;
-            font-size: 11px;
-            font-weight: 600;
-            margin-left: 8px;
-        }
-        .badge-unused { background: rgba(34, 197, 94, 0.2); color: #22c55e; }
-        .badge-used { background: rgba(245, 158, 11, 0.2); color: #f59e0b; }
-        .badge-active { background: rgba(99, 102, 241, 0.2); color: #818cf8; }
-        .badge-expired { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
-        .badge-lifetime { background: rgba(157, 78, 221, 0.2); color: #c77dff; }
-        
-        .backup-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
-            gap: 16px;
-            margin-top: 20px;
-        }
-        
-        .backup-card {
-            background: #0a0a0f;
-            border: 1px solid rgba(157, 78, 221, 0.3);
-            border-radius: 16px;
-            padding: 16px;
-            transition: all 0.2s;
-        }
-        
-        .backup-card:hover {
-            border-color: #9d4edd;
-            box-shadow: 0 0 20px rgba(157, 78, 221, 0.2);
-        }
-        
-        .backup-timestamp {
-            font-size: 16px;
-            font-weight: 600;
-            color: #9d4edd;
-            margin-bottom: 8px;
-        }
-        
-        .backup-description {
-            color: #d0d0e0;
-            font-size: 14px;
-            margin-bottom: 8px;
-        }
-        
-        .backup-meta {
-            font-size: 12px;
-            color: #6b6b7b;
-            margin-bottom: 12px;
-        }
-        
-        .backup-actions {
-            display: flex;
-            gap: 8px;
-        }
-        
-        .backup-actions button {
-            flex: 1;
-            padding: 8px;
-            font-size: 12px;
-        }
-        
-        .modal-overlay {
-            display: none;
-            position: fixed;
-            top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.8);
-            backdrop-filter: blur(5px);
-            justify-content: center;
-            align-items: center;
-            z-index: 1000;
-        }
-        
-        .modal {
-            background: #141418;
-            border: 2px solid #9d4edd;
-            border-radius: 24px;
-            padding: 30px;
-            max-width: 500px;
-            width: 90%;
-            text-align: center;
-        }
-        
-        .modal p {
-            color: white;
-            font-size: 18px;
-            margin-bottom: 24px;
-        }
-        
-        .modal-actions {
-            display: flex;
-            gap: 12px;
-            justify-content: center;
-            flex-wrap: wrap;
-        }
-        
         .search-box {
             margin-bottom: 16px;
         }
@@ -1325,19 +1346,110 @@ ADMIN_HTML = """
             color: white;
             border-color: #c77dff;
         }
+        
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.8);
+            backdrop-filter: blur(5px);
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        
+        .modal {
+            background: #141418;
+            border: 2px solid #9d4edd;
+            border-radius: 24px;
+            padding: 30px;
+            max-width: 500px;
+            width: 90%;
+            text-align: center;
+        }
+        
+        .modal p {
+            color: white;
+            font-size: 18px;
+            margin-bottom: 24px;
+        }
+        
+        .modal-actions {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        
+        .refresh-note {
+            font-size: 11px;
+            color: #6b6b7b;
+            text-align: right;
+            margin-top: 10px;
+        }
+        
+        .backup-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 16px;
+            margin-top: 20px;
+        }
+        
+        .backup-card {
+            background: #0a0a0f;
+            border: 1px solid rgba(157, 78, 221, 0.3);
+            border-radius: 16px;
+            padding: 16px;
+            transition: all 0.2s;
+        }
+        
+        .backup-card:hover {
+            border-color: #9d4edd;
+            box-shadow: 0 0 20px rgba(157, 78, 221, 0.2);
+        }
+        
+        .backup-timestamp {
+            font-size: 16px;
+            font-weight: 600;
+            color: #9d4edd;
+            margin-bottom: 8px;
+        }
+        
+        .backup-description {
+            color: #d0d0e0;
+            font-size: 14px;
+            margin-bottom: 8px;
+        }
+        
+        .backup-meta {
+            font-size: 12px;
+            color: #6b6b7b;
+            margin-bottom: 12px;
+        }
+        
+        .backup-actions {
+            display: flex;
+            gap: 8px;
+        }
+        
+        .backup-actions button {
+            flex: 1;
+            padding: 8px;
+            font-size: 12px;
+        }
     </style>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
 <body>
     <div class="container">
         <h1>⚡ ATLAS ADMIN ULTIMATE v4.0</h1>
-        <p class="subtitle">Complete Key & Backup Management System</p>
+        <p class="subtitle">Complete Key & Backup Management System - Real-time Updates</p>
         
-        <!-- Tab Navigation -->
-        <div class="tabs">
-            <div class="tab active" onclick="switchTab('dashboard')">📊 DASHBOARD</div>
-            <div class="tab" onclick="switchTab('keys')">🔑 KEYS</div>
-            <div class="tab" onclick="switchTab('backups')">💾 BACKUPS</div>
+        <!-- Main Tab Navigation -->
+        <div class="main-tabs">
+            <div class="main-tab active" onclick="switchMainTab('dashboard')">📊 DASHBOARD</div>
+            <div class="main-tab" onclick="switchMainTab('keys')">🔑 KEYS</div>
+            <div class="main-tab" onclick="switchMainTab('backups')">💾 BACKUPS</div>
         </div>
         
         <!-- DASHBOARD PANEL -->
@@ -1386,54 +1498,54 @@ ADMIN_HTML = """
             
             <div id="generatedKeys" style="background: #0a0a0f; border-radius: 12px; padding: 16px; margin-bottom: 20px; display: none;"></div>
             
-            <!-- Key Tabs View -->
-            <div class="key-tabs-container">
-                <div class="key-tabs-scroll" id="keyTabs"></div>
+            <!-- Duration Tabs -->
+            <div class="duration-tabs" id="durationTabs"></div>
+            
+            <!-- Keys Grid -->
+            <div id="keysGrid" class="keys-grid"></div>
+            
+            <!-- Key Detail Panel -->
+            <div id="keyDetailPanel" class="key-detail-panel" style="display: none;">
+                <div class="key-detail-header">
+                    <span class="key-detail-code" id="detailKeyCode"></span>
+                    <span class="key-detail-status" id="detailKeyStatus"></span>
+                </div>
                 
-                <!-- Key Detail Panel -->
-                <div id="keyDetailPanel" class="key-detail-panel" style="display: none;">
-                    <div class="key-detail-header">
-                        <span class="key-detail-code" id="detailKeyCode"></span>
-                        <span class="key-detail-status" id="detailKeyStatus"></span>
+                <div class="key-detail-grid">
+                    <div class="key-detail-item">
+                        <div class="key-detail-label">Created</div>
+                        <div class="key-detail-value small" id="detailCreated"></div>
                     </div>
-                    
-                    <div class="key-detail-grid">
-                        <div class="key-detail-item">
-                            <div class="key-detail-label">Created</div>
-                            <div class="key-detail-value small" id="detailCreated"></div>
-                        </div>
-                        <div class="key-detail-item">
-                            <div class="key-detail-label">Expires (UTC)</div>
-                            <div class="key-detail-value small" id="detailExpiry"></div>
-                        </div>
-                        <div class="key-detail-item">
-                            <div class="key-detail-label">Duration</div>
-                            <div class="key-detail-value" id="detailDuration"></div>
-                        </div>
-                        <div class="key-detail-item">
-                            <div class="key-detail-label">Time Remaining</div>
-                            <div class="time-remaining" id="detailTimeRemaining"></div>
-                        </div>
-                        <div class="key-detail-item">
-                            <div class="key-detail-label">HWID</div>
-                            <div class="key-detail-value small" id="detailHwid">None</div>
-                        </div>
-                        <div class="key-detail-item">
-                            <div class="key-detail-label">Activations</div>
-                            <div class="key-detail-value" id="detailActivations">0</div>
-                        </div>
+                    <div class="key-detail-item">
+                        <div class="key-detail-label">Expires (UTC)</div>
+                        <div class="key-detail-value small" id="detailExpiry"></div>
                     </div>
-                    
-                    <div class="key-action-buttons">
-                        <button class="warning" onclick="showAddTimeModal()">⏱️ Add Time</button>
-                        <button class="secondary" onclick="resetHwid()">🔄 Reset HWID</button>
-                        <button class="danger" onclick="deleteCurrentKey()">🗑️ Delete Key</button>
+                    <div class="key-detail-item">
+                        <div class="key-detail-label">Duration</div>
+                        <div class="key-detail-value" id="detailDuration"></div>
                     </div>
+                    <div class="key-detail-item">
+                        <div class="key-detail-label">Time Remaining</div>
+                        <div class="time-remaining" id="detailTimeRemaining"></div>
+                    </div>
+                    <div class="key-detail-item">
+                        <div class="key-detail-label">HWID</div>
+                        <div class="key-detail-value small" id="detailHwid">None</div>
+                    </div>
+                    <div class="key-detail-item">
+                        <div class="key-detail-label">Activations</div>
+                        <div class="key-detail-value" id="detailActivations">0</div>
+                    </div>
+                </div>
+                
+                <div class="key-action-buttons">
+                    <button class="warning" onclick="showAddTimeModal()">⏱️ Add Time</button>
+                    <button class="secondary" onclick="resetHwid()">🔄 Reset HWID</button>
+                    <button class="danger" onclick="deleteCurrentKey()">🗑️ Delete Key</button>
                 </div>
             </div>
             
-            <!-- Legacy Key List (hidden by default) -->
-            <div class="key-list" id="keyList"></div>
+            <div class="refresh-note">⏱️ Time remaining updates automatically every minute</div>
         </div>
         
         <!-- BACKUPS PANEL -->
@@ -1504,28 +1616,38 @@ ADMIN_HTML = """
     </div>
     
     <script>
-        let allKeys = {};
-        let currentModal = null;
+        let allKeysByDuration = {};
+        let currentDurationTab = '7days';
         let selectedKey = null;
         let selectedDuration = '1hour';
+        let currentModal = null;
+        let updateInterval = null;
+        let serverTime = null;
         
         // Tab switching
-        function switchTab(tab) {
-            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        function switchMainTab(tab) {
+            document.querySelectorAll('.main-tab').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
             
             if (tab === 'dashboard') {
-                document.querySelector('.tabs div:nth-child(1)').classList.add('active');
+                document.querySelector('.main-tab:nth-child(1)').classList.add('active');
                 document.getElementById('dashboardPanel').classList.add('active');
                 loadStats();
             } else if (tab === 'keys') {
-                document.querySelector('.tabs div:nth-child(2)').classList.add('active');
+                document.querySelector('.main-tab:nth-child(2)').classList.add('active');
                 document.getElementById('keysPanel').classList.add('active');
-                loadKeys();
+                loadKeysByDuration();
+                
+                // Start real-time updates
+                if (updateInterval) clearInterval(updateInterval);
+                updateInterval = setInterval(updateKeyTimes, 60000); // Update every minute
             } else if (tab === 'backups') {
-                document.querySelector('.tabs div:nth-child(3)').classList.add('active');
+                document.querySelector('.main-tab:nth-child(3)').classList.add('active');
                 document.getElementById('backupsPanel').classList.add('active');
                 loadBackups();
+                
+                // Stop updates when not on keys tab
+                if (updateInterval) clearInterval(updateInterval);
             }
         }
         
@@ -1547,72 +1669,194 @@ ADMIN_HTML = """
             document.getElementById('statBackups').textContent = data.backup_count || 0;
         }
         
-        // Load keys
-        async function loadKeys() {
-            const res = await fetch('/admin/api/keys');
-            allKeys = await res.json();
-            renderKeyTabs();
+        // Load keys grouped by duration
+        async function loadKeysByDuration() {
+            const res = await fetch('/api/keys/by-duration');
+            const data = await res.json();
+            
+            if (data.success) {
+                allKeysByDuration = data.keys;
+                serverTime = data.server_time;
+                renderDurationTabs();
+                renderKeysGrid(currentDurationTab);
+            }
         }
         
-        function renderKeyTabs() {
-            const tabsContainer = document.getElementById('keyTabs');
-            const now = new Date();
+        // Update key times in real-time
+        async function updateKeyTimes() {
+            if (!selectedKey) {
+                // Just refresh the grid
+                const res = await fetch('/api/keys/by-duration');
+                const data = await res.json();
+                
+                if (data.success) {
+                    allKeysByDuration = data.keys;
+                    renderKeysGrid(currentDurationTab, true); // true = preserve selection
+                }
+            } else {
+                // Update selected key details
+                const res = await fetch(`/api/key/${selectedKey}`);
+                const data = await res.json();
+                
+                if (!data.error) {
+                    updateKeyDetailPanel(data);
+                    
+                    // Also refresh the grid
+                    const gridRes = await fetch('/api/keys/by-duration');
+                    const gridData = await gridRes.json();
+                    
+                    if (gridData.success) {
+                        allKeysByDuration = gridData.keys;
+                        renderKeysGrid(currentDurationTab, true);
+                    }
+                }
+            }
+        }
+        
+        // Render duration tabs
+        function renderDurationTabs() {
+            const tabsContainer = document.getElementById('durationTabs');
+            const durations = Object.keys(allKeysByDuration).sort();
+            
+            // Define display names for durations
+            const durationNames = {
+                '1hour': '1 Hour',
+                '1day': '1 Day',
+                '7days': '7 Days',
+                '30days': '30 Days',
+                '365days': '365 Days',
+                'lifetime': 'Lifetime',
+                'extended_1hour': 'Extended 1h',
+                'extended_1day': 'Extended 1d',
+                'extended_7days': 'Extended 7d',
+                'extended_30days': 'Extended 30d',
+                'extended_365days': 'Extended 365d'
+            };
             
             tabsContainer.innerHTML = '';
             
-            // Sort keys by created date (newest first)
-            const sortedKeys = Object.entries(allKeys).sort((a, b) => 
-                new Date(b[1].created) - new Date(a[1].created)
-            );
+            // Sort durations in a logical order
+            const durationOrder = ['1hour', '1day', '7days', '30days', '365days', 'lifetime'];
+            const sortedDurations = durations.sort((a, b) => {
+                const indexA = durationOrder.indexOf(a);
+                const indexB = durationOrder.indexOf(b);
+                if (indexA === -1 && indexB === -1) return a.localeCompare(b);
+                if (indexA === -1) return 1;
+                if (indexB === -1) return -1;
+                return indexA - indexB;
+            });
             
-            for (const [key, data] of sortedKeys) {
-                const expiry = new Date(data.expiry);
-                const isExpired = expiry < now && data.duration !== 'lifetime';
-                
-                let statusClass = '';
-                if (data.duration === 'lifetime') statusClass = 'lifetime';
-                else if (data.used) statusClass = isExpired ? 'expired' : 'used';
-                else statusClass = 'unused';
+            for (const duration of sortedDurations) {
+                const keys = allKeysByDuration[duration];
+                const displayName = durationNames[duration] || duration;
                 
                 const tab = document.createElement('div');
-                tab.className = `key-tab ${statusClass}`;
-                tab.setAttribute('data-key', key);
-                tab.onclick = () => selectKey(key);
-                tab.innerHTML = `
-                    ${key.substring(0, 14)}...
-                    ${data.duration === 'lifetime' ? '∞' : ''}
-                `;
+                tab.className = `duration-tab ${duration === currentDurationTab ? 'active' : ''}`;
+                tab.setAttribute('data-duration', duration);
+                tab.onclick = () => switchDurationTab(duration);
+                tab.innerHTML = `${displayName} <span class="count">${keys.length}</span>`;
                 tabsContainer.appendChild(tab);
-            }
-            
-            // Select first key by default if none selected
-            if (sortedKeys.length > 0 && !selectedKey) {
-                selectKey(sortedKeys[0][0]);
             }
         }
         
-        function selectKey(key) {
+        // Switch duration tab
+        function switchDurationTab(duration) {
+            currentDurationTab = duration;
+            renderDurationTabs();
+            renderKeysGrid(duration);
+            
+            // Hide detail panel if it was showing a key from another tab
+            if (selectedKey) {
+                const keyExists = allKeysByDuration[duration]?.some(k => k.key === selectedKey);
+                if (!keyExists) {
+                    document.getElementById('keyDetailPanel').style.display = 'none';
+                    selectedKey = null;
+                }
+            }
+        }
+        
+        // Render keys grid
+        function renderKeysGrid(duration, preserveSelection = false) {
+            const grid = document.getElementById('keysGrid');
+            const keys = allKeysByDuration[duration] || [];
+            
+            grid.innerHTML = '';
+            
+            if (keys.length === 0) {
+                grid.innerHTML = '<div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #6b6b7b;">🔑 No keys in this duration</div>';
+                return;
+            }
+            
+            for (const keyData of keys) {
+                const expiryDate = new Date(keyData.expiry);
+                const now = new Date();
+                const isExpired = expiryDate < now && keyData.duration !== 'lifetime';
+                
+                let statusClass = 'unused';
+                if (keyData.duration === 'lifetime') statusClass = 'lifetime';
+                else if (keyData.used) statusClass = isExpired ? 'expired' : 'used';
+                
+                const durationClass = keyData.duration.replace(/[^a-zA-Z0-9]/g, '');
+                
+                const card = document.createElement('div');
+                card.className = `key-card ${statusClass} ${keyData.key === selectedKey ? 'selected' : ''}`;
+                card.setAttribute('data-key', keyData.key);
+                card.onclick = () => selectKey(keyData.key);
+                
+                card.innerHTML = `
+                    <div class="key-code">${keyData.key.substring(0, 20)}...</div>
+                    <div class="key-duration duration-${durationClass}">${keyData.duration}</div>
+                    <div class="key-meta">
+                        Created: ${new Date(keyData.created).toLocaleString()}<br>
+                        HWID: ${keyData.hwid ? keyData.hwid.substring(0, 8) + '...' : 'None'}
+                    </div>
+                    <div class="key-time-remaining ${isExpired ? 'expired' : ''}">
+                        ${keyData.time_remaining}
+                    </div>
+                `;
+                
+                grid.appendChild(card);
+            }
+            
+            // If preserving selection and key still exists, update its details
+            if (preserveSelection && selectedKey) {
+                const keyData = keys.find(k => k.key === selectedKey);
+                if (keyData) {
+                    updateKeyDetailPanel(keyData);
+                }
+            }
+        }
+        
+        // Select a key to show details
+        async function selectKey(key) {
             selectedKey = key;
             
-            // Update tab active state
-            document.querySelectorAll('.key-tab').forEach(tab => {
-                if (tab.getAttribute('data-key') === key) {
-                    tab.classList.add('active');
-                } else {
-                    tab.classList.remove('active');
-                }
-            });
+            // Fetch fresh key details
+            const res = await fetch(`/api/key/${key}`);
+            const data = await res.json();
             
-            // Show detail panel
-            document.getElementById('keyDetailPanel').style.display = 'block';
-            
-            // Populate details
-            const data = allKeys[key];
-            const expiry = new Date(data.expiry);
+            if (!data.error) {
+                updateKeyDetailPanel(data);
+                document.getElementById('keyDetailPanel').style.display = 'block';
+                
+                // Update selected state in grid
+                document.querySelectorAll('.key-card').forEach(card => {
+                    if (card.getAttribute('data-key') === key) {
+                        card.classList.add('selected');
+                    } else {
+                        card.classList.remove('selected');
+                    }
+                });
+            }
+        }
+        
+        // Update key detail panel
+        function updateKeyDetailPanel(data) {
+            const expiryDate = new Date(data.expiry);
             const now = new Date();
-            const isExpired = expiry < now && data.duration !== 'lifetime';
+            const isExpired = expiryDate < now && data.duration !== 'lifetime';
             
-            document.getElementById('detailKeyCode').textContent = key;
+            document.getElementById('detailKeyCode').textContent = data.key;
             
             let statusText = '';
             if (data.duration === 'lifetime') statusText = 'LIFETIME';
@@ -1626,7 +1870,7 @@ ADMIN_HTML = """
             document.getElementById('detailCreated').textContent = new Date(data.created).toLocaleString();
             document.getElementById('detailExpiry').textContent = data.duration === 'lifetime' ? 'Never' : new Date(data.expiry).toLocaleString();
             document.getElementById('detailDuration').textContent = data.duration;
-            document.getElementById('detailHwid').textContent = data.hwid ? data.hwid.substring(0, 16) + '...' : 'None';
+            document.getElementById('detailHwid').textContent = data.hwid ? data.hwid : 'None';
             document.getElementById('detailActivations').textContent = data.activations || 0;
             
             const timeRemainingEl = document.getElementById('detailTimeRemaining');
@@ -1637,32 +1881,12 @@ ADMIN_HTML = """
                 timeRemainingEl.textContent = 'EXPIRED';
                 timeRemainingEl.className = 'time-remaining expired';
             } else {
-                timeRemainingEl.textContent = data.time_remaining || 'Calculating...';
+                timeRemainingEl.textContent = data.time_remaining;
                 timeRemainingEl.className = 'time-remaining';
             }
         }
         
-        function filterKeys() {
-            const search = document.getElementById('keySearch').value.toLowerCase();
-            if (!search) {
-                renderKeyTabs();
-                return;
-            }
-            
-            // Filter and re-render tabs
-            const filtered = Object.fromEntries(
-                Object.entries(allKeys).filter(([key]) => 
-                    key.toLowerCase().includes(search)
-                )
-            );
-            
-            // Temporarily replace allKeys for display
-            const originalKeys = allKeys;
-            allKeys = filtered;
-            renderKeyTabs();
-            allKeys = originalKeys;
-        }
-        
+        // Generate keys
         async function generateKeys() {
             const count = document.getElementById('genCount').value;
             const duration = document.getElementById('genDuration').value;
@@ -1682,9 +1906,10 @@ ADMIN_HTML = """
             setTimeout(() => box.style.display = 'none', 10000);
             
             loadStats();
-            loadKeys();
+            loadKeysByDuration();
         }
         
+        // Delete a key
         async function deleteKey(key) {
             if (!confirm(`Delete key ${key}?`)) return;
             await fetch('/admin/api/delete/' + key, {method: 'DELETE'});
@@ -1692,7 +1917,7 @@ ADMIN_HTML = """
                 selectedKey = null;
                 document.getElementById('keyDetailPanel').style.display = 'none';
             }
-            loadKeys();
+            loadKeysByDuration();
             loadStats();
         }
         
@@ -1715,7 +1940,10 @@ ADMIN_HTML = """
             const data = await res.json();
             if (data.success) {
                 alert('✅ HWID reset successfully');
-                loadKeys();
+                loadKeysByDuration();
+                if (selectedKey) {
+                    setTimeout(() => selectKey(selectedKey), 100);
+                }
             } else {
                 alert('❌ ' + data.message);
             }
@@ -1751,7 +1979,10 @@ ADMIN_HTML = """
             
             if (data.success) {
                 alert(`✅ ${data.message}`);
-                loadKeys();
+                loadKeysByDuration();
+                if (selectedKey) {
+                    setTimeout(() => selectKey(selectedKey), 100);
+                }
                 loadStats();
             } else {
                 alert('❌ ' + data.message);
@@ -1774,7 +2005,7 @@ ADMIN_HTML = """
                 selectedKey = null;
                 document.getElementById('keyDetailPanel').style.display = 'none';
                 loadStats();
-                loadKeys();
+                loadKeysByDuration();
             }
         }
         
@@ -1862,7 +2093,7 @@ ADMIN_HTML = """
                 status.className = 'status-message status-success';
                 status.innerHTML = '✅ Restored successfully!';
                 loadStats();
-                loadKeys();
+                loadKeysByDuration();
                 loadBackups();
                 setTimeout(() => status.style.display = 'none', 3000);
             } else {
@@ -1909,12 +2140,17 @@ ADMIN_HTML = """
         
         function refreshAll() {
             loadStats();
-            loadKeys();
+            loadKeysByDuration();
             loadBackups();
         }
         
         // Initial load
         loadStats();
+        
+        // Clean up interval on page unload
+        window.addEventListener('beforeunload', () => {
+            if (updateInterval) clearInterval(updateInterval);
+        });
     </script>
 </body>
 </html>
@@ -1946,7 +2182,9 @@ if __name__ == '__main__':
     print(f"📊 Admin panel: http://localhost:{port}/admin")
     print(f"🔑 Default admin: {ADMIN_USER} / {'*' * len(ADMIN_PASS)}")
     print(f"\n⚡ FEATURES:")
-    print(f"   ✓ Individual key tabs with detailed views")
+    print(f"   ✓ Keys grouped by duration tabs (1 hour, 1 day, 7 days, etc.)")
+    print(f"   ✓ Click on any key to see detailed info")
+    print(f"   ✓ Real-time time remaining updates (auto-refreshes every minute)")
     print(f"   ✓ HWID reset for each key")
     print(f"   ✓ Add time to existing keys")
     print(f"   ✓ Universal time display (UTC)")
