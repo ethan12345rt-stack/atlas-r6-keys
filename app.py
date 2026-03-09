@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-ATLAS KEY SYSTEM - ULTIMATE EDITION - FULLY FIXED
-Features: 
-- Full key management with bulk operations
-- Advanced backup system with metadata
-- Delete all keys functionality
-- Delete individual backups + delete all backups
-- Separate tabs for better organization
-- NO DUPLICATE ROUTES - All endpoints defined once
+ATLAS KEY SYSTEM - ULTIMATE EDITION v4.0
+Features:
+- Individual key tabs with detailed views
+- HWID reset capability
+- Add time to existing keys
+- Universal time display (UTC)
+- Key status: used/expired/active
+- Cloud backups stored on server
+- Auto-backup rotation
 """
 
 import os
@@ -65,7 +66,7 @@ BACKUP_METADATA_FILE = os.path.join(BACKUP_DIR, 'backup_metadata.json')
 
 KEYS = {}
 USER_PROFILES = {}
-STATS = {'validations': 0, 'generations': 0, 'last_reset': datetime.now().isoformat()}
+STATS = {'validations': 0, 'generations': 0, 'hwid_resets': 0, 'time_additions': 0, 'last_reset': datetime.now().isoformat()}
 BACKUP_METADATA = {}  # Stores info about each backup
 
 ADMIN_USER = "admin"
@@ -75,7 +76,7 @@ file_lock = threading.Lock()
 _data_modified = False
 
 # ============================================================================
-# ENHANCED BACKUP FUNCTIONS
+# ENHANCED BACKUP FUNCTIONS - CLOUD STORAGE
 # ============================================================================
 
 def ensure_dirs():
@@ -174,7 +175,7 @@ def load_data():
 
     KEYS = load_file(KEYS_FILE, {})
     USER_PROFILES = load_file(PROFILES_FILE, {})
-    STATS = load_file(STATS_FILE, {'validations': 0, 'generations': 0, 'last_reset': datetime.now().isoformat()})
+    STATS = load_file(STATS_FILE, {'validations': 0, 'generations': 0, 'hwid_resets': 0, 'time_additions': 0, 'last_reset': datetime.now().isoformat()})
     
     # Load backup metadata
     load_backup_metadata()
@@ -190,10 +191,13 @@ def get_key_stats():
     
     expired = 0
     active = 0
+    lifetime = 0
     for k, data in KEYS.items():
         try:
             expiry = datetime.fromisoformat(data['expiry'])
-            if expiry < now:
+            if data.get('duration') == 'lifetime':
+                lifetime += 1
+            elif expiry < now:
                 expired += 1
             elif data.get('used', False):
                 active += 1
@@ -206,7 +210,7 @@ def get_key_stats():
         'unused': total - used,
         'expired': expired,
         'active': active,
-        'lifetime': sum(1 for k in KEYS if KEYS[k].get('duration') == 'lifetime')
+        'lifetime': lifetime
     }
 
 def delete_all_keys():
@@ -223,7 +227,7 @@ def delete_all_keys():
 # ============================================================================
 
 def create_backup(description=""):
-    """Create timestamped backup with metadata"""
+    """Create timestamped backup with metadata - stored on server"""
     ensure_dirs()
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     created_files = []
@@ -251,8 +255,8 @@ def create_backup(description=""):
         }
         save_backup_metadata()
         
-        # Cleanup old backups
-        cleanup_backups()
+        # Cleanup old backups (keep last 100)
+        cleanup_backups(100)
         
         print(f"[{datetime.now().strftime('%H:%M:%S')}] 📁 Backup created: {timestamp} - {description}")
         return {'success': True, 'timestamp': timestamp, 'metadata': BACKUP_METADATA[timestamp]}
@@ -367,11 +371,11 @@ def delete_all_backups():
     except Exception as e:
         return {'success': False, 'message': str(e)}
 
-def cleanup_backups():
-    """Keep only last 50 backups"""
+def cleanup_backups(max_backups=100):
+    """Keep only last N backups"""
     backups = get_backup_list()
-    if len(backups) > 50:
-        to_delete = backups[50:]
+    if len(backups) > max_backups:
+        to_delete = backups[max_backups:]
         for backup in to_delete:
             delete_backup(backup['timestamp'])
 
@@ -413,22 +417,42 @@ def generate_hwid():
     except:
         return hashlib.md5(str(uuid.getnode()).encode()).hexdigest().upper()
 
-def generate_key(duration='7days'):
-    """Generate new key"""
-    global _data_modified
-
-    key = '-'.join([secrets.token_hex(2).upper() for _ in range(6)])
-
+def parse_duration(duration_str):
+    """Parse duration string to timedelta"""
     duration_map = {
         '1hour': timedelta(hours=1),
         '1day': timedelta(days=1),
         '7days': timedelta(days=7),
         '30days': timedelta(days=30),
         '365days': timedelta(days=365),
-        'lifetime': timedelta(days=9999)
+        'lifetime': timedelta(days=36500)  # 100 years
     }
+    return duration_map.get(duration_str, timedelta(days=7))
 
-    expiry = datetime.now() + duration_map.get(duration, timedelta(days=7))
+def format_time_remaining(expiry_date):
+    """Format time remaining in days/hours/minutes"""
+    now = datetime.now()
+    if expiry_date < now:
+        return "EXPIRED"
+    
+    diff = expiry_date - now
+    days = diff.days
+    hours = diff.seconds // 3600
+    minutes = (diff.seconds % 3600) // 60
+    
+    if days > 0:
+        return f"{days}d {hours}h {minutes}m"
+    elif hours > 0:
+        return f"{hours}h {minutes}m"
+    else:
+        return f"{minutes}m"
+
+def generate_key(duration='7days'):
+    """Generate new key"""
+    global _data_modified
+
+    key = '-'.join([secrets.token_hex(2).upper() for _ in range(6)])
+    expiry = datetime.now() + parse_duration(duration)
 
     KEYS[key] = {
         'created': datetime.now().isoformat(),
@@ -437,7 +461,8 @@ def generate_key(duration='7days'):
         'used': False,
         'hwid': None,
         'activated': None,
-        'activations': 0
+        'activations': 0,
+        'status': 'unused'
     }
 
     STATS['generations'] += 1
@@ -458,7 +483,13 @@ def validate_key(key, hwid):
     now = datetime.now()
     expiry = datetime.fromisoformat(data['expiry'])
 
-    if expiry < now:
+    if data.get('duration') == 'lifetime':
+        # Lifetime keys never expire
+        pass
+    elif expiry < now:
+        data['status'] = 'expired'
+        _data_modified = True
+        save_data(force=True)
         return {'valid': False, 'message': 'Key expired'}
 
     if data['used'] and data['hwid'] and data['hwid'] != hwid:
@@ -467,29 +498,80 @@ def validate_key(key, hwid):
     if not data['used']:
         data['used'] = True
         data['activated'] = now.isoformat()
+        data['status'] = 'active'
 
     data['hwid'] = hwid
-    data['activations'] += 1
+    data['activations'] = data.get('activations', 0) + 1
 
     STATS['validations'] += 1
     _data_modified = True
     save_data(force=True)
 
-    days_left = (expiry - now).days
-    hours_left = (expiry - now).seconds // 3600
+    time_remaining = format_time_remaining(expiry)
 
     return {
         'valid': True,
         'message': 'Key activated',
         'expiry': data['expiry'],
         'duration': data['duration'],
-        'days_left': max(0, days_left),
-        'hours_left': hours_left if days_left == 0 else None,
+        'time_remaining': time_remaining,
+        'status': data['status'],
         'activations': data['activations']
     }
 
+def add_time_to_key(key, additional_time):
+    """Add more time to an existing key"""
+    global _data_modified
+    
+    if key not in KEYS:
+        return {'success': False, 'message': 'Key not found'}
+    
+    data = KEYS[key]
+    
+    if data.get('duration') == 'lifetime':
+        return {'success': False, 'message': 'Lifetime keys cannot be extended'}
+    
+    # Parse additional time (format: "7days", "30days", etc.)
+    additional = parse_duration(additional_time)
+    current_expiry = datetime.fromisoformat(data['expiry'])
+    new_expiry = current_expiry + additional
+    
+    data['expiry'] = new_expiry.isoformat()
+    data['duration'] = f"extended_{additional_time}"
+    
+    STATS['time_additions'] += 1
+    _data_modified = True
+    save_data(force=True)
+    
+    time_remaining = format_time_remaining(new_expiry)
+    
+    return {
+        'success': True,
+        'message': f'Added {additional_time} to key',
+        'new_expiry': data['expiry'],
+        'time_remaining': time_remaining
+    }
+
+def reset_key_hwid(key):
+    """Reset HWID for a key (allows it to be used on another device)"""
+    global _data_modified
+    
+    if key not in KEYS:
+        return {'success': False, 'message': 'Key not found'}
+    
+    data = KEYS[key]
+    data['hwid'] = None
+    data['used'] = False
+    data['status'] = 'unused'
+    
+    STATS['hwid_resets'] += 1
+    _data_modified = True
+    save_data(force=True)
+    
+    return {'success': True, 'message': 'HWID reset successfully'}
+
 # ============================================================================
-# FIXED FLASK ROUTES - NO DUPLICATES
+# FLASK ROUTES
 # ============================================================================
 
 @app.route('/')
@@ -497,7 +579,7 @@ def home():
     return jsonify({
         'name': 'ATLAS Key System',
         'status': 'online',
-        'version': '3.0',
+        'version': '4.0',
         'endpoints': ['/api/status', '/api/validate', '/api/profiles/<hwid>', '/admin']
     })
 
@@ -509,20 +591,18 @@ def status():
         'keys_total': len(KEYS),
         'keys_used': sum(1 for k in KEYS if KEYS[k].get('used')),
         'validations': STATS.get('validations', 0),
-        'generations': STATS.get('generations', 0)
+        'generations': STATS.get('generations', 0),
+        'hwid_resets': STATS.get('hwid_resets', 0),
+        'time_additions': STATS.get('time_additions', 0)
     })
 
 # ============================================================================
-# FIXED VALIDATE ENDPOINT - SINGLE DEFINITION
+# VALIDATE ENDPOINT
 # ============================================================================
 @app.route('/api/validate', methods=['POST', 'OPTIONS'])
 @cross_origin()
 def api_validate():
-    """
-    Validate license key and bind to HWID
-    Handles both POST requests and OPTIONS preflight
-    """
-    # Handle preflight OPTIONS request
+    """Validate license key and bind to HWID"""
     if request.method == 'OPTIONS':
         response = make_response()
         response.headers.add("Access-Control-Allow-Origin", "*")
@@ -532,7 +612,6 @@ def api_validate():
         response.headers.add('Access-Control-Max-Age', "3600")
         return response
     
-    # Handle POST request (actual validation)
     try:
         data = request.get_json()
         if not data:
@@ -541,7 +620,6 @@ def api_validate():
         key = data.get('key', '').strip().upper()
         hwid = data.get('hwid', generate_hwid())
         
-        # Debug logging
         print(f"[API] Validate attempt - Key: {key}, HWID: {hwid}")
         
         result = validate_key(key, hwid)
@@ -552,6 +630,44 @@ def api_validate():
     except Exception as e:
         print(f"[API ERROR] {str(e)}")
         return jsonify({'valid': False, 'message': 'Server error'}), 500
+
+# ============================================================================
+# KEY MANAGEMENT ROUTES
+# ============================================================================
+
+@app.route('/api/key/<key>', methods=['GET'])
+def get_key_details(key):
+    """Get details for a specific key"""
+    if key in KEYS:
+        data = KEYS[key].copy()
+        data['key'] = key
+        expiry = datetime.fromisoformat(data['expiry'])
+        data['time_remaining'] = format_time_remaining(expiry)
+        return jsonify(data)
+    return jsonify({'error': 'Key not found'}), 404
+
+@app.route('/api/key/<key>/add-time', methods=['POST'])
+def api_add_time(key):
+    """Add time to a key"""
+    auth = request.authorization
+    if not auth or auth.username != ADMIN_USER or auth.password != ADMIN_PASS:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    data = request.json
+    duration = data.get('duration', '7days')
+    
+    result = add_time_to_key(key, duration)
+    return jsonify(result)
+
+@app.route('/api/key/<key>/reset-hwid', methods=['POST'])
+def api_reset_hwid(key):
+    """Reset HWID for a key"""
+    auth = request.authorization
+    if not auth or auth.username != ADMIN_USER or auth.password != ADMIN_PASS:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    result = reset_key_hwid(key)
+    return jsonify(result)
 
 # ============================================================================
 # PROFILE ENDPOINTS
@@ -575,7 +691,7 @@ def save_profiles(hwid):
     for key_data in KEYS.values():
         if key_data.get('hwid') == hwid and key_data.get('used'):
             expiry = datetime.fromisoformat(key_data['expiry'])
-            if expiry > datetime.now():
+            if key_data.get('duration') == 'lifetime' or expiry > datetime.now():
                 has_valid_key = True
                 break
     
@@ -611,6 +727,8 @@ def admin_stats():
         **key_stats,
         'validations': STATS.get('validations', 0),
         'generations': STATS.get('generations', 0),
+        'hwid_resets': STATS.get('hwid_resets', 0),
+        'time_additions': STATS.get('time_additions', 0),
         'backup_count': len(get_backup_list())
     })
 
@@ -619,7 +737,16 @@ def admin_get_keys():
     auth = request.authorization
     if not auth or auth.username != ADMIN_USER or auth.password != ADMIN_PASS:
         return jsonify({'error': 'Unauthorized'}), 401
-    return jsonify(KEYS)
+    
+    # Return keys with formatted time remaining
+    keys_with_time = {}
+    for key, data in KEYS.items():
+        keys_with_time[key] = data.copy()
+        if data.get('duration') != 'lifetime':
+            expiry = datetime.fromisoformat(data['expiry'])
+            keys_with_time[key]['time_remaining'] = format_time_remaining(expiry)
+    
+    return jsonify(keys_with_time)
 
 @app.route('/admin/api/keys/delete-all', methods=['POST'])
 def admin_delete_all_keys():
@@ -751,19 +878,19 @@ def admin_backup_download(timestamp):
         return jsonify({'error': str(e)}), 500
 
 # ============================================================================
-# ADMIN HTML (keep as is - it's long but working)
+# ADMIN HTML - UPDATED WITH KEY TABS AND MANAGEMENT
 # ============================================================================
 
 ADMIN_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>ATLAS Admin Ultimate</title>
+    <title>ATLAS Admin Ultimate v4.0</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Inter', -apple-system, sans-serif; }
         body { background: #0a0a0f; color: #f1f1f4; padding: 20px; }
-        .container { max-width: 1400px; margin: 0 auto; }
+        .container { max-width: 1600px; margin: 0 auto; }
         
         h1 { font-size: 32px; background: linear-gradient(135deg, #9d4edd, #c77dff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 8px; }
         .subtitle { color: #6b6b7b; margin-bottom: 30px; }
@@ -861,9 +988,12 @@ ADMIN_HTML = """
         button.primary:hover { background: #6b2d8f; transform: translateY(-2px); }
         button.secondary { background: #2a2a35; color: white; }
         button.secondary:hover { background: #3a3a45; }
+        button.success { background: #22c55e; color: white; }
+        button.success:hover { background: #16a34a; }
+        button.warning { background: #f59e0b; color: black; }
+        button.warning:hover { background: #d97706; }
         button.danger { background: #ef4444; color: white; }
         button.danger:hover { background: #dc2626; }
-        button.warning { background: #f59e0b; color: black; }
         
         input, select {
             padding: 12px 16px;
@@ -875,12 +1005,152 @@ ADMIN_HTML = """
             min-width: 150px;
         }
         
+        /* Key Tabs */
+        .key-tabs-container {
+            margin-bottom: 20px;
+        }
+        
+        .key-tabs-scroll {
+            display: flex;
+            gap: 8px;
+            overflow-x: auto;
+            padding: 8px 0;
+            margin-bottom: 16px;
+            scrollbar-width: thin;
+            scrollbar-color: #9d4edd #2a2a35;
+        }
+        
+        .key-tabs-scroll::-webkit-scrollbar {
+            height: 6px;
+        }
+        
+        .key-tabs-scroll::-webkit-scrollbar-track {
+            background: #2a2a35;
+            border-radius: 10px;
+        }
+        
+        .key-tabs-scroll::-webkit-scrollbar-thumb {
+            background: #9d4edd;
+            border-radius: 10px;
+        }
+        
+        .key-tab {
+            padding: 10px 20px;
+            background: #2a2a35;
+            border-radius: 30px;
+            cursor: pointer;
+            white-space: nowrap;
+            font-size: 13px;
+            transition: all 0.2s;
+            border: 1px solid transparent;
+        }
+        
+        .key-tab:hover {
+            background: #3a3a45;
+        }
+        
+        .key-tab.active {
+            background: #9d4edd;
+            color: white;
+            border-color: #c77dff;
+        }
+        
+        .key-tab.used { border-left: 3px solid #f59e0b; }
+        .key-tab.expired { border-left: 3px solid #ef4444; }
+        .key-tab.active.used { border-left: 3px solid #f59e0b; }
+        .key-tab.active.expired { border-left: 3px solid #ef4444; }
+        
+        /* Key Detail Panel */
+        .key-detail-panel {
+            background: #0a0a0f;
+            border-radius: 16px;
+            padding: 24px;
+            border: 1px solid rgba(157, 78, 221, 0.3);
+        }
+        
+        .key-detail-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .key-detail-code {
+            font-family: monospace;
+            font-size: 24px;
+            color: #9d4edd;
+            font-weight: 600;
+        }
+        
+        .key-detail-status {
+            padding: 6px 16px;
+            border-radius: 30px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        
+        .status-unused { background: rgba(34, 197, 94, 0.2); color: #22c55e; }
+        .status-used { background: rgba(245, 158, 11, 0.2); color: #f59e0b; }
+        .status-active { background: rgba(99, 102, 241, 0.2); color: #818cf8; }
+        .status-expired { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
+        .status-lifetime { background: rgba(157, 78, 221, 0.2); color: #c77dff; }
+        
+        .key-detail-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .key-detail-item {
+            background: #141418;
+            border-radius: 12px;
+            padding: 16px;
+        }
+        
+        .key-detail-label {
+            color: #6b6b7b;
+            font-size: 12px;
+            margin-bottom: 8px;
+        }
+        
+        .key-detail-value {
+            font-size: 18px;
+            font-weight: 600;
+            color: white;
+        }
+        
+        .key-detail-value.small {
+            font-size: 14px;
+            font-family: monospace;
+        }
+        
+        .time-remaining {
+            font-size: 24px;
+            font-weight: 700;
+            color: #22c55e;
+        }
+        
+        .time-remaining.expired {
+            color: #ef4444;
+        }
+        
+        .key-action-buttons {
+            display: flex;
+            gap: 12px;
+            margin-top: 20px;
+        }
+        
         .key-list { 
             max-height: 500px; 
             overflow-y: auto; 
             border-radius: 16px; 
             background: #0a0a0f; 
+            display: none;
         }
+        
         .key-item { 
             display: flex; 
             justify-content: space-between; 
@@ -888,12 +1158,14 @@ ADMIN_HTML = """
             padding: 16px; 
             border-bottom: 1px solid rgba(255,255,255,0.05); 
         }
+        
         .key-code { 
             font-family: monospace; 
             font-size: 14px; 
             color: #9d4edd; 
             font-weight: 600;
         }
+        
         .key-meta { 
             font-size: 12px; 
             color: #6b6b7b; 
@@ -910,6 +1182,7 @@ ADMIN_HTML = """
         }
         .badge-unused { background: rgba(34, 197, 94, 0.2); color: #22c55e; }
         .badge-used { background: rgba(245, 158, 11, 0.2); color: #f59e0b; }
+        .badge-active { background: rgba(99, 102, 241, 0.2); color: #818cf8; }
         .badge-expired { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
         .badge-lifetime { background: rgba(157, 78, 221, 0.2); color: #c77dff; }
         
@@ -919,6 +1192,7 @@ ADMIN_HTML = """
             gap: 16px;
             margin-top: 20px;
         }
+        
         .backup-card {
             background: #0a0a0f;
             border: 1px solid rgba(157, 78, 221, 0.3);
@@ -926,30 +1200,36 @@ ADMIN_HTML = """
             padding: 16px;
             transition: all 0.2s;
         }
+        
         .backup-card:hover {
             border-color: #9d4edd;
             box-shadow: 0 0 20px rgba(157, 78, 221, 0.2);
         }
+        
         .backup-timestamp {
             font-size: 16px;
             font-weight: 600;
             color: #9d4edd;
             margin-bottom: 8px;
         }
+        
         .backup-description {
             color: #d0d0e0;
             font-size: 14px;
             margin-bottom: 8px;
         }
+        
         .backup-meta {
             font-size: 12px;
             color: #6b6b7b;
             margin-bottom: 12px;
         }
+        
         .backup-actions {
             display: flex;
             gap: 8px;
         }
+        
         .backup-actions button {
             flex: 1;
             padding: 8px;
@@ -966,28 +1246,34 @@ ADMIN_HTML = """
             align-items: center;
             z-index: 1000;
         }
+        
         .modal {
             background: #141418;
             border: 2px solid #9d4edd;
             border-radius: 24px;
             padding: 30px;
-            max-width: 400px;
+            max-width: 500px;
+            width: 90%;
             text-align: center;
         }
+        
         .modal p {
             color: white;
             font-size: 18px;
             margin-bottom: 24px;
         }
+        
         .modal-actions {
             display: flex;
             gap: 12px;
             justify-content: center;
+            flex-wrap: wrap;
         }
         
         .search-box {
             margin-bottom: 16px;
         }
+        
         .search-box input {
             width: 100%;
         }
@@ -1012,12 +1298,39 @@ ADMIN_HTML = """
         .status-success { background: rgba(34, 197, 94, 0.2); color: #22c55e; border: 1px solid #22c55e; }
         .status-error { background: rgba(239, 68, 68, 0.2); color: #ef4444; border: 1px solid #ef4444; }
         .status-info { background: rgba(157, 78, 221, 0.2); color: #c77dff; border: 1px solid #9d4edd; }
+        
+        .duration-selector {
+            display: flex;
+            gap: 10px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        
+        .duration-btn {
+            padding: 8px 16px;
+            background: #2a2a35;
+            border: 1px solid transparent;
+            border-radius: 30px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .duration-btn:hover {
+            background: #3a3a45;
+        }
+        
+        .duration-btn.selected {
+            background: #9d4edd;
+            color: white;
+            border-color: #c77dff;
+        }
     </style>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
 <body>
     <div class="container">
-        <h1>⚡ ATLAS ADMIN ULTIMATE</h1>
+        <h1>⚡ ATLAS ADMIN ULTIMATE v4.0</h1>
         <p class="subtitle">Complete Key & Backup Management System</p>
         
         <!-- Tab Navigation -->
@@ -1042,6 +1355,8 @@ ADMIN_HTML = """
             <div class="stats-grid">
                 <div class="stat-card"><div class="stat-value" id="statValidations">0</div><div class="stat-label">Validations</div></div>
                 <div class="stat-card"><div class="stat-value" id="statGenerations">0</div><div class="stat-label">Generations</div></div>
+                <div class="stat-card"><div class="stat-value" id="statHwidResets">0</div><div class="stat-label">HWID Resets</div></div>
+                <div class="stat-card"><div class="stat-value" id="statTimeAdditions">0</div><div class="stat-label">Time Additions</div></div>
                 <div class="stat-card"><div class="stat-value" id="statBackups">0</div><div class="stat-label">Backups</div></div>
             </div>
             
@@ -1071,10 +1386,53 @@ ADMIN_HTML = """
             
             <div id="generatedKeys" style="background: #0a0a0f; border-radius: 12px; padding: 16px; margin-bottom: 20px; display: none;"></div>
             
-            <div class="search-box">
-                <input type="text" id="keySearch" placeholder="🔍 Search keys..." onkeyup="filterKeys()">
+            <!-- Key Tabs View -->
+            <div class="key-tabs-container">
+                <div class="key-tabs-scroll" id="keyTabs"></div>
+                
+                <!-- Key Detail Panel -->
+                <div id="keyDetailPanel" class="key-detail-panel" style="display: none;">
+                    <div class="key-detail-header">
+                        <span class="key-detail-code" id="detailKeyCode"></span>
+                        <span class="key-detail-status" id="detailKeyStatus"></span>
+                    </div>
+                    
+                    <div class="key-detail-grid">
+                        <div class="key-detail-item">
+                            <div class="key-detail-label">Created</div>
+                            <div class="key-detail-value small" id="detailCreated"></div>
+                        </div>
+                        <div class="key-detail-item">
+                            <div class="key-detail-label">Expires (UTC)</div>
+                            <div class="key-detail-value small" id="detailExpiry"></div>
+                        </div>
+                        <div class="key-detail-item">
+                            <div class="key-detail-label">Duration</div>
+                            <div class="key-detail-value" id="detailDuration"></div>
+                        </div>
+                        <div class="key-detail-item">
+                            <div class="key-detail-label">Time Remaining</div>
+                            <div class="time-remaining" id="detailTimeRemaining"></div>
+                        </div>
+                        <div class="key-detail-item">
+                            <div class="key-detail-label">HWID</div>
+                            <div class="key-detail-value small" id="detailHwid">None</div>
+                        </div>
+                        <div class="key-detail-item">
+                            <div class="key-detail-label">Activations</div>
+                            <div class="key-detail-value" id="detailActivations">0</div>
+                        </div>
+                    </div>
+                    
+                    <div class="key-action-buttons">
+                        <button class="warning" onclick="showAddTimeModal()">⏱️ Add Time</button>
+                        <button class="secondary" onclick="resetHwid()">🔄 Reset HWID</button>
+                        <button class="danger" onclick="deleteCurrentKey()">🗑️ Delete Key</button>
+                    </div>
+                </div>
             </div>
             
+            <!-- Legacy Key List (hidden by default) -->
             <div class="key-list" id="keyList"></div>
         </div>
         
@@ -1127,9 +1485,29 @@ ADMIN_HTML = """
         </div>
     </div>
     
+    <!-- Add Time Modal -->
+    <div id="addTimeModal" class="modal-overlay">
+        <div class="modal" style="max-width: 500px;">
+            <p>⏱️ Add Time to Key</p>
+            <div class="duration-selector" id="durationSelector">
+                <button class="duration-btn selected" data-duration="1hour">1 Hour</button>
+                <button class="duration-btn" data-duration="1day">1 Day</button>
+                <button class="duration-btn" data-duration="7days">7 Days</button>
+                <button class="duration-btn" data-duration="30days">30 Days</button>
+                <button class="duration-btn" data-duration="365days">365 Days</button>
+            </div>
+            <div class="modal-actions">
+                <button class="success" onclick="addTimeToKey()">ADD TIME</button>
+                <button class="secondary" onclick="closeModal()">CANCEL</button>
+            </div>
+        </div>
+    </div>
+    
     <script>
         let allKeys = {};
         let currentModal = null;
+        let selectedKey = null;
+        let selectedDuration = '1hour';
         
         // Tab switching
         function switchTab(tab) {
@@ -1164,6 +1542,8 @@ ADMIN_HTML = """
             document.getElementById('statLifetime').textContent = data.lifetime || 0;
             document.getElementById('statValidations').textContent = data.validations || 0;
             document.getElementById('statGenerations').textContent = data.generations || 0;
+            document.getElementById('statHwidResets').textContent = data.hwid_resets || 0;
+            document.getElementById('statTimeAdditions').textContent = data.time_additions || 0;
             document.getElementById('statBackups').textContent = data.backup_count || 0;
         }
         
@@ -1171,63 +1551,116 @@ ADMIN_HTML = """
         async function loadKeys() {
             const res = await fetch('/admin/api/keys');
             allKeys = await res.json();
-            displayKeys(allKeys);
+            renderKeyTabs();
         }
         
-        function displayKeys(keys) {
-            const list = document.getElementById('keyList');
+        function renderKeyTabs() {
+            const tabsContainer = document.getElementById('keyTabs');
             const now = new Date();
             
-            list.innerHTML = Object.entries(keys)
-                .sort((a, b) => new Date(b[1].created) - new Date(a[1].created))
-                .map(([key, data]) => {
-                    const expiry = new Date(data.expiry);
-                    const isExpired = expiry < now;
-                    let status = 'unused';
-                    let statusText = 'Unused';
-                    
-                    if (data.used) {
-                        status = isExpired ? 'expired' : 'used';
-                        statusText = isExpired ? 'Expired' : 'Active';
-                    }
-                    
-                    if (data.duration === 'lifetime') status = 'lifetime';
-                    
-                    return `
-                        <div class="key-item">
-                            <div>
-                                <div>
-                                    <span class="key-code">${key}</span>
-                                    <span class="badge badge-${status}">${statusText}</span>
-                                    ${data.duration === 'lifetime' ? '<span class="badge badge-lifetime">LIFETIME</span>' : ''}
-                                </div>
-                                <div class="key-meta">
-                                    Created: ${new Date(data.created).toLocaleString()} | 
-                                    Expires: ${expiry.toLocaleString()} |
-                                    Duration: ${data.duration}
-                                    ${data.hwid ? ` | HWID: ${data.hwid.substring(0, 8)}...` : ''}
-                                    ${data.activations ? ` | Activations: ${data.activations}` : ''}
-                                </div>
-                            </div>
-                            <button class="danger" onclick="deleteKey('${key}')" style="padding: 8px 16px;">Delete</button>
-                        </div>
-                    `;
-                }).join('');
+            tabsContainer.innerHTML = '';
+            
+            // Sort keys by created date (newest first)
+            const sortedKeys = Object.entries(allKeys).sort((a, b) => 
+                new Date(b[1].created) - new Date(a[1].created)
+            );
+            
+            for (const [key, data] of sortedKeys) {
+                const expiry = new Date(data.expiry);
+                const isExpired = expiry < now && data.duration !== 'lifetime';
+                
+                let statusClass = '';
+                if (data.duration === 'lifetime') statusClass = 'lifetime';
+                else if (data.used) statusClass = isExpired ? 'expired' : 'used';
+                else statusClass = 'unused';
+                
+                const tab = document.createElement('div');
+                tab.className = `key-tab ${statusClass}`;
+                tab.setAttribute('data-key', key);
+                tab.onclick = () => selectKey(key);
+                tab.innerHTML = `
+                    ${key.substring(0, 14)}...
+                    ${data.duration === 'lifetime' ? '∞' : ''}
+                `;
+                tabsContainer.appendChild(tab);
+            }
+            
+            // Select first key by default if none selected
+            if (sortedKeys.length > 0 && !selectedKey) {
+                selectKey(sortedKeys[0][0]);
+            }
+        }
+        
+        function selectKey(key) {
+            selectedKey = key;
+            
+            // Update tab active state
+            document.querySelectorAll('.key-tab').forEach(tab => {
+                if (tab.getAttribute('data-key') === key) {
+                    tab.classList.add('active');
+                } else {
+                    tab.classList.remove('active');
+                }
+            });
+            
+            // Show detail panel
+            document.getElementById('keyDetailPanel').style.display = 'block';
+            
+            // Populate details
+            const data = allKeys[key];
+            const expiry = new Date(data.expiry);
+            const now = new Date();
+            const isExpired = expiry < now && data.duration !== 'lifetime';
+            
+            document.getElementById('detailKeyCode').textContent = key;
+            
+            let statusText = '';
+            if (data.duration === 'lifetime') statusText = 'LIFETIME';
+            else if (data.used) statusText = isExpired ? 'EXPIRED' : 'ACTIVE';
+            else statusText = 'UNUSED';
+            
+            const statusEl = document.getElementById('detailKeyStatus');
+            statusEl.textContent = statusText;
+            statusEl.className = `key-detail-status status-${data.duration === 'lifetime' ? 'lifetime' : (data.used ? (isExpired ? 'expired' : 'active') : 'unused')}`;
+            
+            document.getElementById('detailCreated').textContent = new Date(data.created).toLocaleString();
+            document.getElementById('detailExpiry').textContent = data.duration === 'lifetime' ? 'Never' : new Date(data.expiry).toLocaleString();
+            document.getElementById('detailDuration').textContent = data.duration;
+            document.getElementById('detailHwid').textContent = data.hwid ? data.hwid.substring(0, 16) + '...' : 'None';
+            document.getElementById('detailActivations').textContent = data.activations || 0;
+            
+            const timeRemainingEl = document.getElementById('detailTimeRemaining');
+            if (data.duration === 'lifetime') {
+                timeRemainingEl.textContent = '∞ LIFETIME';
+                timeRemainingEl.className = 'time-remaining';
+            } else if (isExpired) {
+                timeRemainingEl.textContent = 'EXPIRED';
+                timeRemainingEl.className = 'time-remaining expired';
+            } else {
+                timeRemainingEl.textContent = data.time_remaining || 'Calculating...';
+                timeRemainingEl.className = 'time-remaining';
+            }
         }
         
         function filterKeys() {
             const search = document.getElementById('keySearch').value.toLowerCase();
             if (!search) {
-                displayKeys(allKeys);
+                renderKeyTabs();
                 return;
             }
             
+            // Filter and re-render tabs
             const filtered = Object.fromEntries(
                 Object.entries(allKeys).filter(([key]) => 
                     key.toLowerCase().includes(search)
                 )
             );
-            displayKeys(filtered);
+            
+            // Temporarily replace allKeys for display
+            const originalKeys = allKeys;
+            allKeys = filtered;
+            renderKeyTabs();
+            allKeys = originalKeys;
         }
         
         async function generateKeys() {
@@ -1253,10 +1686,76 @@ ADMIN_HTML = """
         }
         
         async function deleteKey(key) {
-            if (!confirm('Delete this key?')) return;
+            if (!confirm(`Delete key ${key}?`)) return;
             await fetch('/admin/api/delete/' + key, {method: 'DELETE'});
+            if (selectedKey === key) {
+                selectedKey = null;
+                document.getElementById('keyDetailPanel').style.display = 'none';
+            }
             loadKeys();
             loadStats();
+        }
+        
+        function deleteCurrentKey() {
+            if (selectedKey) {
+                deleteKey(selectedKey);
+            }
+        }
+        
+        // Reset HWID
+        async function resetHwid() {
+            if (!selectedKey) return;
+            if (!confirm(`Reset HWID for key ${selectedKey.substring(0, 14)}...?`)) return;
+            
+            const res = await fetch(`/api/key/${selectedKey}/reset-hwid`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'}
+            });
+            
+            const data = await res.json();
+            if (data.success) {
+                alert('✅ HWID reset successfully');
+                loadKeys();
+            } else {
+                alert('❌ ' + data.message);
+            }
+        }
+        
+        // Add Time functions
+        function showAddTimeModal() {
+            if (!selectedKey) return;
+            currentModal = 'addTimeModal';
+            document.getElementById('addTimeModal').style.display = 'flex';
+            
+            // Setup duration buttons
+            document.querySelectorAll('.duration-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    document.querySelectorAll('.duration-btn').forEach(b => b.classList.remove('selected'));
+                    this.classList.add('selected');
+                    selectedDuration = this.getAttribute('data-duration');
+                });
+            });
+        }
+        
+        async function addTimeToKey() {
+            if (!selectedKey) return;
+            
+            const res = await fetch(`/api/key/${selectedKey}/add-time`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({duration: selectedDuration})
+            });
+            
+            const data = await res.json();
+            closeModal();
+            
+            if (data.success) {
+                alert(`✅ ${data.message}`);
+                loadKeys();
+                loadStats();
+            } else {
+                alert('❌ ' + data.message);
+            }
         }
         
         // Delete ALL keys
@@ -1272,6 +1771,8 @@ ADMIN_HTML = """
             
             if (data.success) {
                 alert(`✅ Deleted ${data.deleted_count} keys`);
+                selectedKey = null;
+                document.getElementById('keyDetailPanel').style.display = 'none';
                 loadStats();
                 loadKeys();
             }
@@ -1441,16 +1942,17 @@ if __name__ == '__main__':
     threading.Thread(target=auto_save_worker, daemon=True).start()
 
     port = int(os.environ.get('PORT', 10000))
-    print(f"\n🚀 ATLAS ULTIMATE starting on port {port}")
+    print(f"\n🚀 ATLAS ULTIMATE v4.0 starting on port {port}")
     print(f"📊 Admin panel: http://localhost:{port}/admin")
     print(f"🔑 Default admin: {ADMIN_USER} / {'*' * len(ADMIN_PASS)}")
     print(f"\n⚡ FEATURES:")
-    print(f"   ✓ Separate tabs for Dashboard, Keys, Backups")
-    print(f"   ✓ Delete ALL keys with confirmation")
-    print(f"   ✓ Delete individual backups")
-    print(f"   ✓ Delete ALL backups")
-    print(f"   ✓ Backup metadata with descriptions")
-    print(f"   ✓ Key search and filtering")
+    print(f"   ✓ Individual key tabs with detailed views")
+    print(f"   ✓ HWID reset for each key")
+    print(f"   ✓ Add time to existing keys")
+    print(f"   ✓ Universal time display (UTC)")
+    print(f"   ✓ Key status: used/expired/active")
+    print(f"   ✓ Cloud backups stored on server")
+    print(f"   ✓ Auto-backup rotation (keep last 100)")
     print(f"\nPress Ctrl+C to stop (data will be saved)\n")
 
     try:
