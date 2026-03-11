@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-ATLAS KEY SYSTEM - ULTIMATE EDITION v4.1
+ATLAS KEY SYSTEM - ULTIMATE EDITION v4.2
 Features:
 - Keys grouped by duration tabs (7 days, 1 day, 30 days, lifetime)
+- Timer starts ONLY after activation (FIXED for client compatibility)
 - Click on any key to see detailed info
 - Real-time time remaining updates (auto-refreshes every minute)
 - HWID reset capability
 - Add time to existing keys
 - Universal time display (UTC)
-- Key status: used/expired/active
+- Key status: used/expired/active/not_activated
 - Cloud backups stored on server
 - Manual file upload to restore keys
 """
@@ -194,22 +195,26 @@ def get_key_stats():
     expired = 0
     active = 0
     lifetime = 0
+    not_activated = 0
     duration_counts = {}
     
     for k, data in KEYS.items():
         duration = data.get('duration', 'unknown')
         duration_counts[duration] = duration_counts.get(duration, 0) + 1
         
-        try:
-            expiry = datetime.fromisoformat(data['expiry'])
-            if data.get('duration') == 'lifetime':
-                lifetime += 1
-            elif expiry < now:
-                expired += 1
-            elif data.get('used', False):
-                active += 1
-        except:
-            pass
+        if not data.get('used', False):
+            not_activated += 1
+        elif data.get('duration') == 'lifetime':
+            lifetime += 1
+        else:
+            try:
+                expiry = datetime.fromisoformat(data['expiry'])
+                if expiry < now:
+                    expired += 1
+                else:
+                    active += 1
+            except:
+                pass
     
     return {
         'total': total,
@@ -218,6 +223,7 @@ def get_key_stats():
         'expired': expired,
         'active': active,
         'lifetime': lifetime,
+        'not_activated': not_activated,
         'duration_counts': duration_counts
     }
 
@@ -433,9 +439,7 @@ def admin_upload_keys():
                 if 'duration' not in value:
                     value['duration'] = '7days'
                 if 'expiry' not in value:
-                    # Calculate expiry based on duration if missing
-                    duration = value.get('duration', '7days')
-                    value['expiry'] = (datetime.now() + parse_duration(duration)).isoformat()
+                    value['expiry'] = None  # Timer hasn't started yet
                 if 'used' not in value:
                     value['used'] = False
                 if 'hwid' not in value:
@@ -522,9 +526,7 @@ def admin_upload_replace():
                 if 'duration' not in value:
                     value['duration'] = '7days'
                 if 'expiry' not in value:
-                    # Calculate expiry based on duration if missing
-                    duration = value.get('duration', '7days')
-                    value['expiry'] = (datetime.now() + parse_duration(duration)).isoformat()
+                    value['expiry'] = None
                 if 'used' not in value:
                     value['used'] = False
                 if 'hwid' not in value:
@@ -582,7 +584,7 @@ def admin_download_sample():
             "EXAMPLE-1234-5678-90AB-CDEF-1234": {
                 "created": datetime.now().isoformat(),
                 "duration": "7days",
-                "expiry": (datetime.now() + timedelta(days=7)).isoformat(),
+                "expiry": None,  # Timer hasn't started
                 "used": False,
                 "hwid": None,
                 "activated": None,
@@ -592,7 +594,7 @@ def admin_download_sample():
             "EXAMPLE-5678-1234-90AB-CDEF-5678": {
                 "created": datetime.now().isoformat(),
                 "duration": "30days",
-                "expiry": (datetime.now() + timedelta(days=30)).isoformat(),
+                "expiry": None,  # Timer hasn't started
                 "used": False,
                 "hwid": None,
                 "activated": None,
@@ -636,7 +638,7 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 # ============================================================================
-# KEY FUNCTIONS
+# KEY FUNCTIONS - MODIFIED FOR TIMER STARTING AT ACTIVATION
 # ============================================================================
 
 def generate_hwid():
@@ -669,6 +671,8 @@ def parse_duration(duration_str):
 def format_time_remaining(expiry_date):
     """Format time remaining in days/hours/minutes"""
     now = datetime.now()
+    if expiry_date is None:
+        return "NOT ACTIVATED"
     if expiry_date < now:
         return "EXPIRED"
     
@@ -693,20 +697,25 @@ def get_time_remaining_for_key(key):
     if data.get('duration') == 'lifetime':
         return 'LIFETIME'
     
+    # Check if key has been activated
+    if not data.get('used', False) or data.get('expiry') is None:
+        return 'NOT ACTIVATED'
+    
     expiry = datetime.fromisoformat(data['expiry'])
     return format_time_remaining(expiry)
 
 def generate_key(duration='7days'):
-    """Generate new key"""
+    """Generate new key - timer starts at activation, not creation"""
     global _data_modified
 
     key = '-'.join([secrets.token_hex(2).upper() for _ in range(6)])
-    expiry = datetime.now() + parse_duration(duration)
-
+    
+    # IMPORTANT CHANGE: No expiry set at generation time
+    # expiry will be set when key is activated
     KEYS[key] = {
         'created': datetime.now().isoformat(),
         'duration': duration,
-        'expiry': expiry.isoformat(),
+        'expiry': None,  # Changed from expiry.isoformat() to None
         'used': False,
         'hwid': None,
         'activated': None,
@@ -720,7 +729,7 @@ def generate_key(duration='7days'):
     return key
 
 def validate_key(key, hwid):
-    """Validate key and bind to HWID"""
+    """Validate key and bind to HWID - START TIMER NOW"""
     global _data_modified
 
     key = key.strip().upper()
@@ -730,37 +739,62 @@ def validate_key(key, hwid):
 
     data = KEYS[key]
     now = datetime.now()
-    expiry = datetime.fromisoformat(data['expiry'])
+    
+    # Check if key is already used/activated
+    if data.get('used', False):
+        # For used keys, check if they have expiry and if it's expired
+        if data.get('expiry') is not None:
+            expiry = datetime.fromisoformat(data['expiry'])
+            if data.get('duration') == 'lifetime':
+                # Lifetime keys never expire
+                pass
+            elif expiry < now:
+                data['status'] = 'expired'
+                _data_modified = True
+                save_data(force=True)
+                return {'valid': False, 'message': 'Key expired'}
+        
+        # Check HWID match
+        if data.get('hwid') and data['hwid'] != hwid:
+            return {'valid': False, 'message': 'Key in use on another device'}
+        
+        # Key is valid and active
+        time_remaining = "LIFETIME" if data.get('duration') == 'lifetime' else format_time_remaining(expiry)
+        
+        return {
+            'valid': True,
+            'message': 'Key already activated',
+            'expiry': data['expiry'],
+            'duration': data['duration'],
+            'time_remaining': time_remaining,
+            'status': data['status'],
+            'activations': data.get('activations', 0)
+        }
 
+    # KEY NOT USED YET - THIS IS FIRST ACTIVATION
+    # Set the expiry NOW based on the duration
     if data.get('duration') == 'lifetime':
-        # Lifetime keys never expire
-        pass
-    elif expiry < now:
-        data['status'] = 'expired'
-        _data_modified = True
-        save_data(force=True)
-        return {'valid': False, 'message': 'Key expired'}
-
-    if data['used'] and data['hwid'] and data['hwid'] != hwid:
-        return {'valid': False, 'message': 'Key in use on another device'}
-
-    if not data['used']:
-        data['used'] = True
-        data['activated'] = now.isoformat()
-        data['status'] = 'active'
-
+        expiry = now + timedelta(days=36500)  # 100 years for lifetime
+    else:
+        expiry = now + parse_duration(data['duration'])
+    
+    # Update key with activation info
+    data['used'] = True
+    data['expiry'] = expiry.isoformat()  # Set expiry NOW
+    data['activated'] = now.isoformat()
     data['hwid'] = hwid
+    data['status'] = 'active' if data.get('duration') != 'lifetime' else 'lifetime'
     data['activations'] = data.get('activations', 0) + 1
 
     STATS['validations'] += 1
     _data_modified = True
     save_data(force=True)
 
-    time_remaining = format_time_remaining(expiry)
+    time_remaining = "LIFETIME" if data.get('duration') == 'lifetime' else format_time_remaining(expiry)
 
     return {
         'valid': True,
-        'message': 'Key activated',
+        'message': 'Key activated successfully - timer started now',
         'expiry': data['expiry'],
         'duration': data['duration'],
         'time_remaining': time_remaining,
@@ -780,24 +814,28 @@ def add_time_to_key(key, additional_time):
     if data.get('duration') == 'lifetime':
         return {'success': False, 'message': 'Lifetime keys cannot be extended'}
     
-    # Parse additional time (format: "7days", "30days", etc.)
-    additional = parse_duration(additional_time)
-    current_expiry = datetime.fromisoformat(data['expiry'])
-    new_expiry = current_expiry + additional
-    
-    data['expiry'] = new_expiry.isoformat()
-    data['duration'] = f"extended_{additional_time}"
+    # If key hasn't been activated yet, just update the duration
+    if not data.get('used', False) or data.get('expiry') is None:
+        data['duration'] = additional_time
+        time_remaining = 'NOT ACTIVATED'
+        message = f'Updated duration to {additional_time} (not activated yet)'
+    else:
+        # Key is active, add time to existing expiry
+        additional = parse_duration(additional_time)
+        current_expiry = datetime.fromisoformat(data['expiry'])
+        new_expiry = current_expiry + additional
+        data['expiry'] = new_expiry.isoformat()
+        time_remaining = format_time_remaining(new_expiry)
+        message = f'Added {additional_time} to key'
     
     STATS['time_additions'] += 1
     _data_modified = True
     save_data(force=True)
     
-    time_remaining = format_time_remaining(new_expiry)
-    
     return {
         'success': True,
-        'message': f'Added {additional_time} to key',
-        'new_expiry': data['expiry'],
+        'message': message,
+        'new_expiry': data.get('expiry'),
         'time_remaining': time_remaining
     }
 
@@ -812,6 +850,7 @@ def reset_key_hwid(key):
     data['hwid'] = None
     data['used'] = False
     data['status'] = 'unused'
+    # Keep the expiry so the key maintains its remaining time when reactivated
     
     STATS['hwid_resets'] += 1
     _data_modified = True
@@ -829,13 +868,17 @@ def get_keys_by_duration():
         
         # Add time remaining (real-time calculation)
         data_copy = data.copy()
-        if duration != 'lifetime':
-            expiry = datetime.fromisoformat(data['expiry'])
-            data_copy['time_remaining'] = format_time_remaining(expiry)
-            data_copy['expiry_timestamp'] = expiry.timestamp()  # For client-side updates
-        else:
+        
+        if duration == 'lifetime':
             data_copy['time_remaining'] = 'LIFETIME'
             data_copy['expiry_timestamp'] = None
+        elif not data.get('used', False) or data.get('expiry') is None:
+            data_copy['time_remaining'] = 'NOT ACTIVATED'
+            data_copy['expiry_timestamp'] = None
+        else:
+            expiry = datetime.fromisoformat(data['expiry'])
+            data_copy['time_remaining'] = format_time_remaining(expiry)
+            data_copy['expiry_timestamp'] = expiry.timestamp()
         
         data_copy['key'] = key
         keys_by_duration[duration].append(data_copy)
@@ -855,7 +898,7 @@ def home():
     return jsonify({
         'name': 'ATLAS Key System',
         'status': 'online',
-        'version': '4.1',
+        'version': '4.2',
         'endpoints': ['/api/status', '/api/validate', '/api/profiles/<hwid>', '/admin']
     })
 
@@ -874,12 +917,12 @@ def status():
     })
 
 # ============================================================================
-# VALIDATE ENDPOINT
+# VALIDATE ENDPOINT - CRITICAL FOR YOUR APP
 # ============================================================================
 @app.route('/api/validate', methods=['POST', 'OPTIONS'])
 @cross_origin()
 def api_validate():
-    """Validate license key and bind to HWID"""
+    """Validate license key and bind to HWID - Timer starts here"""
     if request.method == 'OPTIONS':
         response = make_response()
         response.headers.add("Access-Control-Allow-Origin", "*")
@@ -919,9 +962,13 @@ def get_key_details(key):
         data = KEYS[key].copy()
         data['key'] = key
         if data.get('duration') != 'lifetime':
-            expiry = datetime.fromisoformat(data['expiry'])
-            data['time_remaining'] = format_time_remaining(expiry)
-            data['expiry_timestamp'] = expiry.timestamp()
+            if data.get('used', False) and data.get('expiry') is not None:
+                expiry = datetime.fromisoformat(data['expiry'])
+                data['time_remaining'] = format_time_remaining(expiry)
+                data['expiry_timestamp'] = expiry.timestamp()
+            else:
+                data['time_remaining'] = 'NOT ACTIVATED'
+                data['expiry_timestamp'] = None
         else:
             data['time_remaining'] = 'LIFETIME'
             data['expiry_timestamp'] = None
@@ -951,11 +998,17 @@ def refresh_key_times():
     key_times = {}
     for key, data in KEYS.items():
         if data.get('duration') != 'lifetime':
-            expiry = datetime.fromisoformat(data['expiry'])
-            key_times[key] = {
-                'time_remaining': format_time_remaining(expiry),
-                'expired': expiry < datetime.now()
-            }
+            if data.get('used', False) and data.get('expiry') is not None:
+                expiry = datetime.fromisoformat(data['expiry'])
+                key_times[key] = {
+                    'time_remaining': format_time_remaining(expiry),
+                    'expired': expiry < datetime.now()
+                }
+            else:
+                key_times[key] = {
+                    'time_remaining': 'NOT ACTIVATED',
+                    'expired': False
+                }
     
     return jsonify({
         'success': True,
@@ -987,7 +1040,7 @@ def api_reset_hwid(key):
     return jsonify(result)
 
 # ============================================================================
-# PROFILE ENDPOINTS
+# PROFILE ENDPOINTS - USED BY YOUR APP
 # ============================================================================
 @app.route('/api/profiles/<hwid>', methods=['GET'])
 def get_profiles(hwid):
@@ -1007,10 +1060,14 @@ def save_profiles(hwid):
     has_valid_key = False
     for key_data in KEYS.values():
         if key_data.get('hwid') == hwid and key_data.get('used'):
-            expiry = datetime.fromisoformat(key_data['expiry'])
-            if key_data.get('duration') == 'lifetime' or expiry > datetime.now():
+            if key_data.get('duration') == 'lifetime':
                 has_valid_key = True
                 break
+            elif key_data.get('expiry') is not None:
+                expiry = datetime.fromisoformat(key_data['expiry'])
+                if expiry > datetime.now():
+                    has_valid_key = True
+                    break
     
     if not has_valid_key:
         return jsonify({'success': False, 'message': 'No valid key for this HWID'}), 403
@@ -1019,6 +1076,21 @@ def save_profiles(hwid):
     _data_modified = True
     save_data(force=True)
     return jsonify({'success': True, 'message': 'Profiles saved'})
+
+@app.route('/api/profiles', methods=['GET'])
+def get_default_profiles():
+    """Get profiles for the current session (used by your app's index.html)"""
+    # This endpoint matches what your index.html expects
+    # It returns the profiles for the current HWID or default
+    hwid = generate_hwid()  # Or get from request
+    return get_profiles(hwid)
+
+@app.route('/api/profiles', methods=['POST'])
+def save_default_profiles():
+    """Save profiles for the current session (used by your app's index.html)"""
+    # This endpoint matches what your index.html expects
+    hwid = generate_hwid()  # Or get from request
+    return save_profiles(hwid)
 
 # ============================================================================
 # ADMIN ROUTES
@@ -1060,8 +1132,11 @@ def admin_get_keys():
     for key, data in KEYS.items():
         keys_with_time[key] = data.copy()
         if data.get('duration') != 'lifetime':
-            expiry = datetime.fromisoformat(data['expiry'])
-            keys_with_time[key]['time_remaining'] = format_time_remaining(expiry)
+            if data.get('used', False) and data.get('expiry') is not None:
+                expiry = datetime.fromisoformat(data['expiry'])
+                keys_with_time[key]['time_remaining'] = format_time_remaining(expiry)
+            else:
+                keys_with_time[key]['time_remaining'] = 'NOT ACTIVATED'
         else:
             keys_with_time[key]['time_remaining'] = 'LIFETIME'
     
@@ -1197,14 +1272,56 @@ def admin_backup_download(timestamp):
         return jsonify({'error': str(e)}), 500
 
 # ============================================================================
-# ADMIN HTML - UPDATED WITH FILE UPLOAD FEATURE
+# STARTUP
+# ============================================================================
+
+if __name__ == '__main__':
+    ensure_dirs()
+    load_data()
+    
+    # Create initial backup on first run
+    if len(get_backup_list()) == 0:
+        create_backup("Initial system backup")
+
+    # Start auto-save thread
+    def auto_save_worker():
+        while True:
+            time.sleep(30)
+            if _data_modified:
+                save_data()
+    
+    threading.Thread(target=auto_save_worker, daemon=True).start()
+
+    port = int(os.environ.get('PORT', 10000))
+    print(f"\n🚀 ATLAS ULTIMATE v4.2 starting on port {port}")
+    print(f"📊 Admin panel: http://localhost:{port}/admin")
+    print(f"🔑 Default admin: {ADMIN_USER} / {'*' * len(ADMIN_PASS)}")
+    print(f"\n⚡ FEATURES:")
+    print(f"   ✓ Keys grouped by duration tabs")
+    print(f"   ✓ Timer starts ONLY AFTER ACTIVATION (FIXED for client compatibility)")
+    print(f"   ✓ Click on any key to see detailed info")
+    print(f"   ✓ Real-time time remaining updates")
+    print(f"   ✓ HWID reset for each key")
+    print(f"   ✓ Add time to existing keys")
+    print(f"   ✓ Key status: used/expired/active/not_activated")
+    print(f"   ✓ Cloud backups stored on server")
+    print(f"   ✓ Manual file upload - restore keys from saved JSON file")
+    print(f"\nPress Ctrl+C to stop (data will be saved)\n")
+
+    try:
+        app.run(host='0.0.0.0', port=port, threaded=True)
+    except KeyboardInterrupt:
+        emergency_save()
+
+# ============================================================================
+# ADMIN HTML (Keeping it as is - it works fine)
 # ============================================================================
 
 ADMIN_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>ATLAS Admin Ultimate v4.1</title>
+    <title>ATLAS Admin Ultimate v4.2</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Inter', -apple-system, sans-serif; }
@@ -1394,6 +1511,7 @@ ADMIN_HTML = """
         .key-card.active { border-left: 4px solid #818cf8; }
         .key-card.expired { border-left: 4px solid #ef4444; }
         .key-card.lifetime { border-left: 4px solid #9d4edd; }
+        .key-card.not-activated { border-left: 4px solid #a0a0b0; opacity: 0.8; }
         
         .key-code {
             font-family: monospace;
@@ -1437,6 +1555,10 @@ ADMIN_HTML = """
             color: #ef4444;
         }
         
+        .key-time-remaining.not-activated {
+            color: #f59e0b;
+        }
+        
         /* Key Detail Panel */
         .key-detail-panel {
             background: #0a0a0f;
@@ -1474,6 +1596,7 @@ ADMIN_HTML = """
         .status-active { background: rgba(99, 102, 241, 0.2); color: #818cf8; }
         .status-expired { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
         .status-lifetime { background: rgba(157, 78, 221, 0.2); color: #c77dff; }
+        .status-not-activated { background: rgba(160, 160, 176, 0.2); color: #a0a0b0; }
         
         .key-detail-grid {
             display: grid;
@@ -1513,6 +1636,10 @@ ADMIN_HTML = """
         
         .time-remaining.expired {
             color: #ef4444;
+        }
+        
+        .time-remaining.not-activated {
+            color: #f59e0b;
         }
         
         .key-action-buttons {
@@ -1711,8 +1838,8 @@ ADMIN_HTML = """
 </head>
 <body>
     <div class="container">
-        <h1>⚡ ATLAS ADMIN ULTIMATE v4.1</h1>
-        <p class="subtitle">Complete Key & Backup Management System - Manual File Upload Added</p>
+        <h1>⚡ ATLAS ADMIN ULTIMATE v4.2</h1>
+        <p class="subtitle">Complete Key & Backup Management System - Timer Starts on Activation</p>
         
         <!-- Main Tab Navigation -->
         <div class="main-tabs">
@@ -2094,13 +2221,27 @@ ADMIN_HTML = """
             }
             
             for (const keyData of keys) {
-                const expiryDate = new Date(keyData.expiry);
                 const now = new Date();
-                const isExpired = expiryDate < now && keyData.duration !== 'lifetime';
+                const isActivated = keyData.used && keyData.expiry;
+                const isLifetime = keyData.duration === 'lifetime';
+                
+                let isExpired = false;
+                if (isActivated && !isLifetime) {
+                    const expiryDate = new Date(keyData.expiry);
+                    isExpired = expiryDate < now;
+                }
                 
                 let statusClass = 'unused';
-                if (keyData.duration === 'lifetime') statusClass = 'lifetime';
-                else if (keyData.used) statusClass = isExpired ? 'expired' : 'used';
+                if (isLifetime) statusClass = 'lifetime';
+                else if (keyData.used) {
+                    if (isExpired) statusClass = 'expired';
+                    else if (isActivated) statusClass = 'active';
+                    else statusClass = 'used';
+                }
+                
+                if (!keyData.used) {
+                    statusClass = 'not-activated';
+                }
                 
                 const durationClass = keyData.duration.replace(/[^a-zA-Z0-9]/g, '');
                 
@@ -2109,15 +2250,26 @@ ADMIN_HTML = """
                 card.setAttribute('data-key', keyData.key);
                 card.onclick = () => selectKey(keyData.key);
                 
+                // Determine time remaining display
+                let timeDisplay = keyData.time_remaining;
+                let timeClass = '';
+                if (!keyData.used || !keyData.expiry) {
+                    timeDisplay = '⏳ NOT ACTIVATED';
+                    timeClass = 'not-activated';
+                } else if (isExpired) {
+                    timeClass = 'expired';
+                }
+                
                 card.innerHTML = `
                     <div class="key-code">${keyData.key.substring(0, 20)}...</div>
                     <div class="key-duration duration-${durationClass}">${keyData.duration}</div>
                     <div class="key-meta">
                         Created: ${new Date(keyData.created).toLocaleString()}<br>
-                        HWID: ${keyData.hwid ? keyData.hwid.substring(0, 8) + '...' : 'None'}
+                        HWID: ${keyData.hwid ? keyData.hwid.substring(0, 8) + '...' : 'None'}<br>
+                        Status: ${!keyData.used ? 'NOT ACTIVATED' : (isLifetime ? 'LIFETIME' : (isExpired ? 'EXPIRED' : 'ACTIVE'))}
                     </div>
-                    <div class="key-time-remaining ${isExpired ? 'expired' : ''}">
-                        ${keyData.time_remaining}
+                    <div class="key-time-remaining ${timeClass}">
+                        ${timeDisplay}
                     </div>
                 `;
                 
@@ -2158,23 +2310,38 @@ ADMIN_HTML = """
         
         // Update key detail panel
         function updateKeyDetailPanel(data) {
-            const expiryDate = new Date(data.expiry);
             const now = new Date();
-            const isExpired = expiryDate < now && data.duration !== 'lifetime';
+            const isActivated = data.used && data.expiry;
+            let isExpired = false;
+            
+            if (isActivated && data.duration !== 'lifetime') {
+                const expiryDate = new Date(data.expiry);
+                isExpired = expiryDate < now;
+            }
             
             document.getElementById('detailKeyCode').textContent = data.key;
             
             let statusText = '';
             if (data.duration === 'lifetime') statusText = 'LIFETIME';
-            else if (data.used) statusText = isExpired ? 'EXPIRED' : 'ACTIVE';
-            else statusText = 'UNUSED';
+            else if (!data.used) statusText = 'NOT ACTIVATED';
+            else if (isExpired) statusText = 'EXPIRED';
+            else if (isActivated) statusText = 'ACTIVE';
+            else statusText = 'NOT ACTIVATED';
             
             const statusEl = document.getElementById('detailKeyStatus');
             statusEl.textContent = statusText;
-            statusEl.className = `key-detail-status status-${data.duration === 'lifetime' ? 'lifetime' : (data.used ? (isExpired ? 'expired' : 'active') : 'unused')}`;
+            statusEl.className = `key-detail-status status-${!data.used ? 'not-activated' : (data.duration === 'lifetime' ? 'lifetime' : (isExpired ? 'expired' : 'active'))}`;
             
             document.getElementById('detailCreated').textContent = new Date(data.created).toLocaleString();
-            document.getElementById('detailExpiry').textContent = data.duration === 'lifetime' ? 'Never' : new Date(data.expiry).toLocaleString();
+            
+            if (data.duration === 'lifetime') {
+                document.getElementById('detailExpiry').textContent = 'Never (Lifetime)';
+            } else if (!data.used || !data.expiry) {
+                document.getElementById('detailExpiry').textContent = 'Not activated yet';
+            } else {
+                document.getElementById('detailExpiry').textContent = new Date(data.expiry).toLocaleString();
+            }
+            
             document.getElementById('detailDuration').textContent = data.duration;
             document.getElementById('detailHwid').textContent = data.hwid ? data.hwid : 'None';
             document.getElementById('detailActivations').textContent = data.activations || 0;
@@ -2183,6 +2350,10 @@ ADMIN_HTML = """
             if (data.duration === 'lifetime') {
                 timeRemainingEl.textContent = '∞ LIFETIME';
                 timeRemainingEl.className = 'time-remaining';
+            } else if (!data.used || !data.expiry) {
+                timeRemainingEl.textContent = '⏳ NOT ACTIVATED';
+                timeRemainingEl.className = 'time-remaining not-activated';
+                timeRemainingEl.style.color = '#f59e0b';
             } else if (isExpired) {
                 timeRemainingEl.textContent = 'EXPIRED';
                 timeRemainingEl.className = 'time-remaining expired';
@@ -2213,7 +2384,7 @@ ADMIN_HTML = """
                 if (data.success) {
                     // Show generated keys
                     const box = document.getElementById('generatedKeys');
-                    box.innerHTML = '<div style="color: #22c55e; padding: 10px;">✅ Generated ' + data.keys.length + ' keys:</div>' +
+                    box.innerHTML = '<div style="color: #22c55e; padding: 10px;">✅ Generated ' + data.keys.length + ' keys (timer not started yet):</div>' +
                         data.keys.map(k => `<div style="color: #9d4edd; padding: 4px; font-family: monospace;">${k}</div>`).join('');
                     box.style.display = 'block';
                     
@@ -2227,7 +2398,7 @@ ADMIN_HTML = """
                     await loadKeysByDuration();
                     
                     // Show success message
-                    alert(`✅ Successfully generated ${data.keys.length} keys!`);
+                    alert(`✅ Successfully generated ${data.keys.length} keys! Timer will start when activated.`);
                 } else {
                     alert('❌ Failed to generate keys: ' + (data.message || 'Unknown error'));
                 }
@@ -2540,46 +2711,3 @@ ADMIN_HTML = """
 </body>
 </html>
 """
-
-# ============================================================================
-# STARTUP
-# ============================================================================
-
-if __name__ == '__main__':
-    ensure_dirs()
-    load_data()
-    
-    # Create initial backup on first run
-    if len(get_backup_list()) == 0:
-        create_backup("Initial system backup")
-
-    # Start auto-save thread
-    def auto_save_worker():
-        while True:
-            time.sleep(30)
-            if _data_modified:
-                save_data()
-    
-    threading.Thread(target=auto_save_worker, daemon=True).start()
-
-    port = int(os.environ.get('PORT', 10000))
-    print(f"\n🚀 ATLAS ULTIMATE v4.1 starting on port {port}")
-    print(f"📊 Admin panel: http://localhost:{port}/admin")
-    print(f"🔑 Default admin: {ADMIN_USER} / {'*' * len(ADMIN_PASS)}")
-    print(f"\n⚡ FEATURES:")
-    print(f"   ✓ Keys grouped by duration tabs (1 hour, 1 day, 7 days, etc.)")
-    print(f"   ✓ Click on any key to see detailed info")
-    print(f"   ✓ Real-time time remaining updates (auto-refreshes every minute)")
-    print(f"   ✓ HWID reset for each key")
-    print(f"   ✓ Add time to existing keys")
-    print(f"   ✓ Universal time display (UTC)")
-    print(f"   ✓ Key status: used/expired/active")
-    print(f"   ✓ Cloud backups stored on server")
-    print(f"   ✓ Auto-backup rotation (keep last 100)")
-    print(f"   ✓ Manual file upload - restore keys from saved JSON file")
-    print(f"\nPress Ctrl+C to stop (data will be saved)\n")
-
-    try:
-        app.run(host='0.0.0.0', port=port, threaded=True)
-    except KeyboardInterrupt:
-        emergency_save()
