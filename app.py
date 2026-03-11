@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ATLAS KEY SYSTEM - ULTIMATE EDITION v4.0
+ATLAS KEY SYSTEM - ULTIMATE EDITION v4.1
 Features:
 - Keys grouped by duration tabs (7 days, 1 day, 30 days, lifetime)
 - Click on any key to see detailed info
@@ -10,6 +10,7 @@ Features:
 - Universal time display (UTC)
 - Key status: used/expired/active
 - Cloud backups stored on server
+- Manual file upload to restore keys
 """
 
 import os
@@ -387,6 +388,162 @@ def cleanup_backups(max_backups=100):
             delete_backup(backup['timestamp'])
 
 # ============================================================================
+# FILE UPLOAD ROUTES - MANUAL KEY RESTORE
+# ============================================================================
+
+@app.route('/admin/api/upload/keys', methods=['POST'])
+def admin_upload_keys():
+    """Upload and restore keys from a JSON file"""
+    auth = request.authorization
+    if not auth or auth.username != ADMIN_USER or auth.password != ADMIN_PASS:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    if 'file' not in request.files:
+        return jsonify({'success': False, 'message': 'No file uploaded'}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'success': False, 'message': 'No file selected'}), 400
+    
+    if not file.filename.endswith('.json'):
+        return jsonify({'success': False, 'message': 'Please upload a JSON file'}), 400
+    
+    try:
+        # Read and parse the uploaded file
+        file_content = file.read().decode('utf-8')
+        uploaded_keys = json.loads(file_content)
+        
+        # Validate the structure
+        if not isinstance(uploaded_keys, dict):
+            return jsonify({'success': False, 'message': 'Invalid keys file format'}), 400
+        
+        # Count how many keys are being uploaded
+        key_count = len(uploaded_keys)
+        
+        # Create a backup before merging
+        create_backup(f"Pre-upload backup before merging {key_count} keys")
+        
+        # Merge with existing keys (uploaded keys will override existing ones with same key)
+        global KEYS, _data_modified
+        KEYS.update(uploaded_keys)
+        _data_modified = True
+        save_data(force=True)
+        
+        # Create another backup after merging
+        create_backup(f"Post-upload backup after merging {key_count} keys")
+        
+        return jsonify({
+            'success': True, 
+            'message': f'Successfully uploaded and merged {key_count} keys',
+            'total_keys': len(KEYS)
+        })
+        
+    except json.JSONDecodeError:
+        return jsonify({'success': False, 'message': 'Invalid JSON file - not valid JSON format'}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Error processing file: {str(e)}'}), 500
+
+@app.route('/admin/api/upload/replace', methods=['POST'])
+def admin_upload_replace():
+    """Replace all keys with uploaded file (clear existing)"""
+    auth = request.authorization
+    if not auth or auth.username != ADMIN_USER or auth.password != ADMIN_PASS:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    if 'file' not in request.files:
+        return jsonify({'success': False, 'message': 'No file uploaded'}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'success': False, 'message': 'No file selected'}), 400
+    
+    if not file.filename.endswith('.json'):
+        return jsonify({'success': False, 'message': 'Please upload a JSON file'}), 400
+    
+    try:
+        # Read and parse the uploaded file
+        file_content = file.read().decode('utf-8')
+        uploaded_keys = json.loads(file_content)
+        
+        # Validate the structure
+        if not isinstance(uploaded_keys, dict):
+            return jsonify({'success': False, 'message': 'Invalid keys file format'}), 400
+        
+        # Count how many keys are being uploaded
+        key_count = len(uploaded_keys)
+        
+        # Create a backup of current keys before replacing
+        create_backup(f"Pre-replace backup before replacing with {key_count} keys")
+        
+        # Replace all keys
+        global KEYS, _data_modified
+        KEYS = uploaded_keys
+        _data_modified = True
+        save_data(force=True)
+        
+        # Create another backup after replacing
+        create_backup(f"Post-replace backup after replacing with {key_count} keys")
+        
+        return jsonify({
+            'success': True, 
+            'message': f'Successfully replaced all keys with {key_count} keys from file',
+            'total_keys': len(KEYS)
+        })
+        
+    except json.JSONDecodeError:
+        return jsonify({'success': False, 'message': 'Invalid JSON file - not valid JSON format'}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Error processing file: {str(e)}'}), 500
+
+@app.route('/admin/api/upload/download-sample', methods=['GET'])
+def admin_download_sample():
+    """Download a sample keys.json file"""
+    auth = request.authorization
+    if not auth or auth.username != ADMIN_USER or auth.password != ADMIN_PASS:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    try:
+        # Create a sample keys file
+        sample_keys = {
+            "EXAMPLE-1234-5678-90AB-CDEF-1234": {
+                "expiry": (datetime.now() + timedelta(days=7)).isoformat(),
+                "used": False,
+                "hwid": None,
+                "duration": "7days",
+                "created": datetime.now().isoformat()
+            },
+            "EXAMPLE-5678-1234-90AB-CDEF-5678": {
+                "expiry": (datetime.now() + timedelta(days=30)).isoformat(),
+                "used": False,
+                "hwid": None,
+                "duration": "30days",
+                "created": datetime.now().isoformat()
+            }
+        }
+        
+        # Create a bytes buffer
+            "hwid": None,
+            "duration": "30days",
+            "created": datetime.now().isoformat()
+        }
+    }
+    
+    # Create a bytes buffer
+    memory_file = io.BytesIO()
+    memory_file.write(json.dumps(sample_keys, indent=2).encode('utf-8'))
+    memory_file.seek(0)
+    
+    return send_file(
+        memory_file,
+        download_name='sample_keys.json',
+        as_attachment=True,
+        mimetype='application/json'
+    )
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ============================================================================
 # SHUTDOWN HANDLERS
 # ============================================================================
 
@@ -625,7 +782,7 @@ def home():
     return jsonify({
         'name': 'ATLAS Key System',
         'status': 'online',
-        'version': '4.0',
+        'version': '4.1',
         'endpoints': ['/api/status', '/api/validate', '/api/profiles/<hwid>', '/admin']
     })
 
@@ -967,14 +1124,14 @@ def admin_backup_download(timestamp):
         return jsonify({'error': str(e)}), 500
 
 # ============================================================================
-# ADMIN HTML - UPDATED WITH DURATION TABS AND REAL-TIME UPDATES
+# ADMIN HTML - UPDATED WITH FILE UPLOAD FEATURE
 # ============================================================================
 
 ADMIN_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>ATLAS Admin Ultimate v4.0</title>
+    <title>ATLAS Admin Ultimate v4.1</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Inter', -apple-system, sans-serif; }
@@ -1437,19 +1594,59 @@ ADMIN_HTML = """
             padding: 8px;
             font-size: 12px;
         }
+        
+        /* Upload Section */
+        .upload-section {
+            background: #0a0a0f;
+            border: 2px dashed #9d4edd;
+            border-radius: 16px;
+            padding: 30px;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        
+        .upload-section h3 {
+            color: #c77dff;
+            margin-bottom: 15px;
+        }
+        
+        .upload-section input[type=file] {
+            background: #141418;
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid #9d4edd;
+            color: white;
+            margin-bottom: 15px;
+            width: 100%;
+            max-width: 400px;
+        }
+        
+        .upload-buttons {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        
+        .file-info {
+            color: #6b6b7b;
+            font-size: 12px;
+            margin-top: 10px;
+        }
     </style>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
 <body>
     <div class="container">
-        <h1>⚡ ATLAS ADMIN ULTIMATE v4.0</h1>
-        <p class="subtitle">Complete Key & Backup Management System - Real-time Updates</p>
+        <h1>⚡ ATLAS ADMIN ULTIMATE v4.1</h1>
+        <p class="subtitle">Complete Key & Backup Management System - Manual File Upload Added</p>
         
         <!-- Main Tab Navigation -->
         <div class="main-tabs">
             <div class="main-tab active" onclick="switchMainTab('dashboard')">📊 DASHBOARD</div>
             <div class="main-tab" onclick="switchMainTab('keys')">🔑 KEYS</div>
             <div class="main-tab" onclick="switchMainTab('backups')">💾 BACKUPS</div>
+            <div class="main-tab" onclick="switchMainTab('upload')">📤 UPLOAD</div>
         </div>
         
         <!-- DASHBOARD PANEL -->
@@ -1561,6 +1758,36 @@ ADMIN_HTML = """
             <div id="backupStatus" class="status-message"></div>
             <div id="backupList" class="backup-grid"></div>
         </div>
+        
+        <!-- UPLOAD PANEL -->
+        <div id="uploadPanel" class="panel">
+            <h2>📤 Manual File Upload</h2>
+            
+            <div class="upload-section">
+                <h3>Upload keys.json file</h3>
+                <p style="color: #a0a0b0; margin-bottom: 20px;">Select a previously saved keys.json file to restore your keys</p>
+                
+                <input type="file" id="keyFileInput" accept=".json">
+                
+                <div class="upload-buttons">
+                    <button class="success" onclick="uploadKeys('merge')">➕ Merge with existing keys</button>
+                    <button class="warning" onclick="uploadKeys('replace')">🔄 Replace all keys</button>
+                </div>
+                
+                <div class="file-info">
+                    <p>⚠️ Merge: Adds/updates keys from file without removing existing ones</p>
+                    <p>⚠️ Replace: Deletes all current keys and uses only the ones from file</p>
+                </div>
+            </div>
+            
+            <div class="upload-section">
+                <h3>Download Sample</h3>
+                <p style="color: #a0a0b0; margin-bottom: 20px;">Get a sample keys.json file to see the correct format</p>
+                <button class="secondary" onclick="downloadSample()">📥 Download sample keys.json</button>
+            </div>
+            
+            <div id="uploadStatus" class="status-message"></div>
+        </div>
     </div>
     
     <!-- Delete All Keys Confirmation Modal -->
@@ -1645,6 +1872,12 @@ ADMIN_HTML = """
                 document.querySelector('.main-tab:nth-child(3)').classList.add('active');
                 document.getElementById('backupsPanel').classList.add('active');
                 loadBackups();
+                
+                // Stop updates when not on keys tab
+                if (updateInterval) clearInterval(updateInterval);
+            } else if (tab === 'upload') {
+                document.querySelector('.main-tab:nth-child(4)').classList.add('active');
+                document.getElementById('uploadPanel').classList.add('active');
                 
                 // Stop updates when not on keys tab
                 if (updateInterval) clearInterval(updateInterval);
@@ -2134,6 +2367,62 @@ ADMIN_HTML = """
             window.location.href = `/admin/api/backup/download/${timestamp}`;
         }
         
+        // Upload functions
+        async function uploadKeys(mode) {
+            const fileInput = document.getElementById('keyFileInput');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                alert('Please select a file first');
+                return;
+            }
+            
+            const status = document.getElementById('uploadStatus');
+            status.className = 'status-message status-info';
+            status.innerHTML = '<span class="loading"></span> Uploading...';
+            status.style.display = 'block';
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            const endpoint = mode === 'merge' ? '/admin/api/upload/keys' : '/admin/api/upload/replace';
+            
+            try {
+                const res = await fetch(endpoint, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await res.json();
+                
+                if (data.success) {
+                    status.className = 'status-message status-success';
+                    status.innerHTML = `✅ ${data.message}`;
+                    
+                    // Refresh stats and keys
+                    loadStats();
+                    if (document.getElementById('keysPanel').classList.contains('active')) {
+                        loadKeysByDuration();
+                    }
+                    
+                    // Clear file input
+                    fileInput.value = '';
+                    
+                    setTimeout(() => status.style.display = 'none', 5000);
+                } else {
+                    status.className = 'status-message status-error';
+                    status.innerHTML = '❌ ' + data.message;
+                }
+            } catch (error) {
+                status.className = 'status-message status-error';
+                status.innerHTML = '❌ Upload failed: ' + error.message;
+            }
+        }
+        
+        function downloadSample() {
+            window.location.href = '/admin/api/upload/download-sample';
+        }
+        
         function closeModal() {
             document.querySelectorAll('.modal-overlay').forEach(m => m.style.display = 'none');
         }
@@ -2178,7 +2467,7 @@ if __name__ == '__main__':
     threading.Thread(target=auto_save_worker, daemon=True).start()
 
     port = int(os.environ.get('PORT', 10000))
-    print(f"\n🚀 ATLAS ULTIMATE v4.0 starting on port {port}")
+    print(f"\n🚀 ATLAS ULTIMATE v4.1 starting on port {port}")
     print(f"📊 Admin panel: http://localhost:{port}/admin")
     print(f"🔑 Default admin: {ADMIN_USER} / {'*' * len(ADMIN_PASS)}")
     print(f"\n⚡ FEATURES:")
@@ -2191,6 +2480,7 @@ if __name__ == '__main__':
     print(f"   ✓ Key status: used/expired/active")
     print(f"   ✓ Cloud backups stored on server")
     print(f"   ✓ Auto-backup rotation (keep last 100)")
+    print(f"   ✓ Manual file upload - restore keys from saved JSON file")
     print(f"\nPress Ctrl+C to stop (data will be saved)\n")
 
     try:
