@@ -388,7 +388,7 @@ def cleanup_backups(max_backups=100):
             delete_backup(backup['timestamp'])
 
 # ============================================================================
-# FILE UPLOAD ROUTES - MANUAL KEY RESTORE
+# FILE UPLOAD ROUTES - MANUAL KEY RESTORE (FIXED VERSION)
 # ============================================================================
 
 @app.route('/admin/api/upload/keys', methods=['POST'])
@@ -413,33 +413,70 @@ def admin_upload_keys():
         file_content = file.read().decode('utf-8')
         uploaded_keys = json.loads(file_content)
         
-        # Validate the structure
+        # Validate that it's a dictionary
         if not isinstance(uploaded_keys, dict):
-            return jsonify({'success': False, 'message': 'Invalid keys file format'}), 400
+            return jsonify({'success': False, 'message': 'Invalid keys file format - expected a dictionary'}), 400
         
         # Count how many keys are being uploaded
         key_count = len(uploaded_keys)
         
+        # Validate each key has the required fields
+        valid_keys = {}
+        invalid_keys = 0
+        
+        for key, value in uploaded_keys.items():
+            # Check if it's a dictionary
+            if isinstance(value, dict):
+                # Ensure all required fields exist with defaults if missing
+                if 'created' not in value:
+                    value['created'] = datetime.now().isoformat()
+                if 'duration' not in value:
+                    value['duration'] = '7days'
+                if 'expiry' not in value:
+                    # Calculate expiry based on duration if missing
+                    duration = value.get('duration', '7days')
+                    value['expiry'] = (datetime.now() + parse_duration(duration)).isoformat()
+                if 'used' not in value:
+                    value['used'] = False
+                if 'hwid' not in value:
+                    value['hwid'] = None
+                if 'activated' not in value:
+                    value['activated'] = None
+                if 'activations' not in value:
+                    value['activations'] = 0
+                if 'status' not in value:
+                    value['status'] = 'unused' if not value.get('used', False) else 'active'
+                
+                valid_keys[key] = value
+            else:
+                invalid_keys += 1
+        
         # Create a backup before merging
         create_backup(f"Pre-upload backup before merging {key_count} keys")
         
-        # Merge with existing keys (uploaded keys will override existing ones with same key)
+        # Merge with existing keys
         global KEYS, _data_modified
-        KEYS.update(uploaded_keys)
+        KEYS.update(valid_keys)
         _data_modified = True
         save_data(force=True)
         
         # Create another backup after merging
         create_backup(f"Post-upload backup after merging {key_count} keys")
         
+        message = f'Successfully uploaded and merged {len(valid_keys)} keys'
+        if invalid_keys > 0:
+            message += f' (skipped {invalid_keys} invalid entries)'
+        
         return jsonify({
             'success': True, 
-            'message': f'Successfully uploaded and merged {key_count} keys',
-            'total_keys': len(KEYS)
+            'message': message,
+            'total_keys': len(KEYS),
+            'valid_keys': len(valid_keys),
+            'invalid_keys': invalid_keys
         })
         
-    except json.JSONDecodeError:
-        return jsonify({'success': False, 'message': 'Invalid JSON file - not valid JSON format'}), 400
+    except json.JSONDecodeError as e:
+        return jsonify({'success': False, 'message': f'Invalid JSON file: {str(e)}'}), 400
     except Exception as e:
         return jsonify({'success': False, 'message': f'Error processing file: {str(e)}'}), 500
 
@@ -465,33 +502,70 @@ def admin_upload_replace():
         file_content = file.read().decode('utf-8')
         uploaded_keys = json.loads(file_content)
         
-        # Validate the structure
+        # Validate that it's a dictionary
         if not isinstance(uploaded_keys, dict):
-            return jsonify({'success': False, 'message': 'Invalid keys file format'}), 400
+            return jsonify({'success': False, 'message': 'Invalid keys file format - expected a dictionary'}), 400
         
         # Count how many keys are being uploaded
         key_count = len(uploaded_keys)
+        
+        # Validate each key has the required fields
+        valid_keys = {}
+        invalid_keys = 0
+        
+        for key, value in uploaded_keys.items():
+            # Check if it's a dictionary
+            if isinstance(value, dict):
+                # Ensure all required fields exist with defaults if missing
+                if 'created' not in value:
+                    value['created'] = datetime.now().isoformat()
+                if 'duration' not in value:
+                    value['duration'] = '7days'
+                if 'expiry' not in value:
+                    # Calculate expiry based on duration if missing
+                    duration = value.get('duration', '7days')
+                    value['expiry'] = (datetime.now() + parse_duration(duration)).isoformat()
+                if 'used' not in value:
+                    value['used'] = False
+                if 'hwid' not in value:
+                    value['hwid'] = None
+                if 'activated' not in value:
+                    value['activated'] = None
+                if 'activations' not in value:
+                    value['activations'] = 0
+                if 'status' not in value:
+                    value['status'] = 'unused' if not value.get('used', False) else 'active'
+                
+                valid_keys[key] = value
+            else:
+                invalid_keys += 1
         
         # Create a backup of current keys before replacing
         create_backup(f"Pre-replace backup before replacing with {key_count} keys")
         
         # Replace all keys
         global KEYS, _data_modified
-        KEYS = uploaded_keys
+        KEYS = valid_keys
         _data_modified = True
         save_data(force=True)
         
         # Create another backup after replacing
         create_backup(f"Post-replace backup after replacing with {key_count} keys")
         
+        message = f'Successfully replaced all keys with {len(valid_keys)} keys from file'
+        if invalid_keys > 0:
+            message += f' (skipped {invalid_keys} invalid entries)'
+        
         return jsonify({
             'success': True, 
-            'message': f'Successfully replaced all keys with {key_count} keys from file',
-            'total_keys': len(KEYS)
+            'message': message,
+            'total_keys': len(KEYS),
+            'valid_keys': len(valid_keys),
+            'invalid_keys': invalid_keys
         })
         
-    except json.JSONDecodeError:
-        return jsonify({'success': False, 'message': 'Invalid JSON file - not valid JSON format'}), 400
+    except json.JSONDecodeError as e:
+        return jsonify({'success': False, 'message': f'Invalid JSON file: {str(e)}'}), 400
     except Exception as e:
         return jsonify({'success': False, 'message': f'Error processing file: {str(e)}'}), 500
 
@@ -503,21 +577,27 @@ def admin_download_sample():
         return jsonify({'error': 'Unauthorized'}), 401
     
     try:
-        # Create a sample keys file
+        # Create a sample keys file matching your format
         sample_keys = {
             "EXAMPLE-1234-5678-90AB-CDEF-1234": {
+                "created": datetime.now().isoformat(),
+                "duration": "7days",
                 "expiry": (datetime.now() + timedelta(days=7)).isoformat(),
                 "used": False,
                 "hwid": None,
-                "duration": "7days",
-                "created": datetime.now().isoformat()
+                "activated": None,
+                "activations": 0,
+                "status": "unused"
             },
             "EXAMPLE-5678-1234-90AB-CDEF-5678": {
+                "created": datetime.now().isoformat(),
+                "duration": "30days",
                 "expiry": (datetime.now() + timedelta(days=30)).isoformat(),
                 "used": False,
                 "hwid": None,
-                "duration": "30days",
-                "created": datetime.now().isoformat()
+                "activated": None,
+                "activations": 0,
+                "status": "unused"
             }
         }
         
@@ -2117,22 +2197,44 @@ ADMIN_HTML = """
             const count = document.getElementById('genCount').value;
             const duration = document.getElementById('genDuration').value;
             
-            const res = await fetch('/admin/api/generate', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({count: parseInt(count), duration: duration})
-            });
-            
-            const data = await res.json();
-            
-            const box = document.getElementById('generatedKeys');
-            box.innerHTML = '<div style="color: #22c55e; padding: 10px;">✅ Generated ' + data.keys.length + ' keys:</div>' +
-                data.keys.map(k => `<div style="color: #9d4edd; padding: 4px; font-family: monospace;">${k}</div>`).join('');
-            box.style.display = 'block';
-            setTimeout(() => box.style.display = 'none', 10000);
-            
-            loadStats();
-            loadKeysByDuration();
+            try {
+                const res = await fetch('/admin/api/generate', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({count: parseInt(count), duration: duration})
+                });
+                
+                if (!res.ok) {
+                    throw new Error(`HTTP error! status: ${res.status}`);
+                }
+                
+                const data = await res.json();
+                
+                if (data.success) {
+                    // Show generated keys
+                    const box = document.getElementById('generatedKeys');
+                    box.innerHTML = '<div style="color: #22c55e; padding: 10px;">✅ Generated ' + data.keys.length + ' keys:</div>' +
+                        data.keys.map(k => `<div style="color: #9d4edd; padding: 4px; font-family: monospace;">${k}</div>`).join('');
+                    box.style.display = 'block';
+                    
+                    // Auto-hide after 10 seconds
+                    setTimeout(() => {
+                        box.style.display = 'none';
+                    }, 10000);
+                    
+                    // Refresh the keys display and stats
+                    await loadStats();
+                    await loadKeysByDuration();
+                    
+                    // Show success message
+                    alert(`✅ Successfully generated ${data.keys.length} keys!`);
+                } else {
+                    alert('❌ Failed to generate keys: ' + (data.message || 'Unknown error'));
+                }
+            } catch (error) {
+                console.error('Generate keys error:', error);
+                alert('❌ Error generating keys: ' + error.message);
+            }
         }
         
         // Delete a key
@@ -2393,9 +2495,9 @@ ADMIN_HTML = """
                     status.innerHTML = `✅ ${data.message}`;
                     
                     // Refresh stats and keys
-                    loadStats();
+                    await loadStats();
                     if (document.getElementById('keysPanel').classList.contains('active')) {
-                        loadKeysByDuration();
+                        await loadKeysByDuration();
                     }
                     
                     // Clear file input
@@ -2407,6 +2509,7 @@ ADMIN_HTML = """
                     status.innerHTML = '❌ ' + data.message;
                 }
             } catch (error) {
+                console.error('Upload error:', error);
                 status.className = 'status-message status-error';
                 status.innerHTML = '❌ Upload failed: ' + error.message;
             }
