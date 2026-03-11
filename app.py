@@ -522,23 +522,16 @@ def admin_download_sample():
         }
         
         # Create a bytes buffer
-            "hwid": None,
-            "duration": "30days",
-            "created": datetime.now().isoformat()
-        }
-    }
-    
-    # Create a bytes buffer
-    memory_file = io.BytesIO()
-    memory_file.write(json.dumps(sample_keys, indent=2).encode('utf-8'))
-    memory_file.seek(0)
-    
-    return send_file(
-        memory_file,
-        download_name='sample_keys.json',
-        as_attachment=True,
-        mimetype='application/json'
-    )
+        memory_file = io.BytesIO()
+        memory_file.write(json.dumps(sample_keys, indent=2).encode('utf-8'))
+        memory_file.seek(0)
+        
+        return send_file(
+            memory_file,
+            download_name='sample_keys.json',
+            as_attachment=True,
+            mimetype='application/json'
+        )
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500
